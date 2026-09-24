@@ -1,0 +1,43 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Emerald & Charcoal Dark Rescue Palette */
+    --background: 155 35% 6%;         /* Deep dark pine #07130c */
+    --foreground: 150 20% 98%;        /* Crisp off-white */
+
+    --card: 155 30% 9%;               /* Elevated dark green card #0c1c13 */
+    --card-foreground: 150 20% 98%;
+
+    --popover: 155 30% 9%;
+    --popover-foreground: 150 20% 98%;
+
+    --primary: 152 76% 45%;           /* Vibrant Emerald Green #1bd677 */
+    --primary-foreground: 155 40% 4%;
+
+    --secondary: 155 25% 15%;         /* Muted forest tone */
+    --secondary-foreground: 150 20% 98%;
+
+    --muted: 155 20% 16%;
+    --muted-foreground: 150 15% 65%;
+
+    --accent: 152 65% 22%;            /* Forest accent highlight */
+    --accent-foreground: 150 20% 98%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 155 20% 18%;            /* Subtle emerald border */
+    --input: 155 20% 18%;
+    --ring: 152 76% 45%;
+
+    --radius: 0.75rem;                /* Rounded-xl modern corners */
+  }
+}
+
+body {
+  @apply bg-background text-foreground antialiased selection:bg-primary/20 selection:text-primary;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
