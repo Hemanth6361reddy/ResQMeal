@@ -1,0 +1,28 @@
+# Environment & Secrets (Crucial: never push passwords/tokens)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python (Backend)
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+.pytest_cache/
+.coverage
+
+# Node.js & React (Frontend)
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+
+# OS & VS Code
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
