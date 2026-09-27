@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/resqmeal_db"
 
+    # JWT Authentication
+    SECRET_KEY: str = "resqmeal_super_secret_jwt_key_change_in_production_xyz123"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
