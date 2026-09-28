@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, auth, donations
+from app.api.v1.endpoints import health, auth, donations, ngos
 
 api_router = APIRouter()
 
@@ -7,3 +7,4 @@ api_router = APIRouter()
 api_router.include_router(health.router, tags=["System Health"])
 api_router.include_router(auth.router, prefix="/auth", tags=["Authentication & RBAC"])
 api_router.include_router(donations.router, prefix="/donations", tags=["Donations (Donor Module)"])
+api_router.include_router(ngos.router, prefix="/ngo", tags=["NGO Module & Proximity Search"])

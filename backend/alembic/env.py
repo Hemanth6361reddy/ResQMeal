@@ -18,6 +18,18 @@ if config.config_file_name is not None:
 # Set target metadata for 'autogenerate' support
 target_metadata = Base.metadata
 
+
+def include_object(object, name, type_, reflected, compare_to):
+    """Tell Alembic to NEVER touch PostGIS system tables."""
+
+    if name == "spatial_ref_sys" or (
+        hasattr(object, "name") and object.name == "spatial_ref_sys"
+    ):
+        return False
+
+    return True
+
+
 # Escape '%' as '%%' for configparser to prevent interpolation errors
 escaped_url = settings.DATABASE_URL.replace("%", "%%")
 config.set_main_option("sqlalchemy.url", escaped_url)
@@ -32,6 +44,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         process_revision_directives=alembic_helpers.writer,
         render_item=alembic_helpers.render_item,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -51,6 +64,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             process_revision_directives=alembic_helpers.writer,
             render_item=alembic_helpers.render_item,
+            include_object=include_object,
         )
 
         with context.begin_transaction():

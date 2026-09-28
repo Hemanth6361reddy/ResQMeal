@@ -5,13 +5,13 @@ import { LandingPage } from "@/pages/LandingPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { DonorDashboardPage } from "@/pages/donor/DonorDashboardPage";
 import { CreateDonationPage } from "@/pages/donor/CreateDonationPage";
+import { NGODashboardPage } from "@/pages/ngo/NGODashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
-// Initialize TanStack Query Client with sensible caching defaults
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 1000 * 60 * 2, // 2 minutes cache
+      staleTime: 1000 * 60 * 2,
       refetchOnWindowFocus: false,
     },
   },
@@ -29,6 +29,9 @@ export default function App() {
             {/* Donor Portal Routes */}
             <Route path="donor/dashboard" element={<DonorDashboardPage />} />
             <Route path="donor/create" element={<CreateDonationPage />} />
+
+            {/* NGO Portal Routes */}
+            <Route path="ngo/dashboard" element={<NGODashboardPage />} />
 
             <Route path="*" element={<NotFoundPage />} />
           </Route>
