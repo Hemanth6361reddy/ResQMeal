@@ -25,11 +25,19 @@ class VehicleType(str, enum.Enum):
     CAR = "CAR"
     VAN = "VAN"
     TRUCK = "TRUCK"
-    AUTO_RICKSHAW = "AUTO_RICKSHAW"
 
 
 class RequestStatus(str, enum.Enum):
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class DeliveryStatus(str, enum.Enum):
+    ASSIGNMENT_PENDING = "ASSIGNMENT_PENDING"
+    ACCEPTED = "ACCEPTED"
+    PICKED_UP = "PICKED_UP"
+    ON_THE_WAY = "ON_THE_WAY"
+    DELIVERED = "DELIVERED"
     CANCELLED = "CANCELLED"

@@ -6,6 +6,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { DonorDashboardPage } from "@/pages/donor/DonorDashboardPage";
 import { CreateDonationPage } from "@/pages/donor/CreateDonationPage";
 import { NGODashboardPage } from "@/pages/ngo/NGODashboardPage";
+import { DriverDashboardPage } from "@/pages/driver/DriverDashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -32,6 +33,9 @@ export default function App() {
 
             {/* NGO Portal Routes */}
             <Route path="ngo/dashboard" element={<NGODashboardPage />} />
+
+            {/* Delivery Partner Portal Routes */}
+            <Route path="driver/dashboard" element={<DriverDashboardPage />} />
 
             <Route path="*" element={<NotFoundPage />} />
           </Route>
