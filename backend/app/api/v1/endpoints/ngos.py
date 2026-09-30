@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast
@@ -11,21 +12,56 @@ from app.db.session import get_db
 from app.models.user import User
 from app.models.donation import Donation
 from app.models.request import DonationRequest
-from app.models.enums import UserRole, DonationStatus, RequestStatus
-from app.schemas.request import NearbyDonationResponse, DonationClaimRequest, DonationClaimResponse, MyClaimWithDonationResponse
+from app.models.delivery import Delivery
+from app.models.enums import (
+    UserRole,
+    DonationStatus,
+    RequestStatus,
+    DeliveryStatus
+)
+from app.schemas.request import (
+    NearbyDonationResponse,
+    DonationClaimRequest,
+    DonationClaimResponse,
+    MyClaimWithDonationResponse
+)
 from app.api.deps import RoleChecker
 
 router = APIRouter()
 
 
-@router.get("/nearby", response_model=List[NearbyDonationResponse], summary="Find Nearby Donations (PostGIS Spatial Query)")
+@router.get(
+    "/nearby",
+    response_model=List[NearbyDonationResponse],
+    summary="Find Nearby Donations (PostGIS Spatial Query)"
+)
 def get_nearby_donations(
-    latitude: float = Query(..., ge=-90.0, le=90.0, example=12.9716),
-    longitude: float = Query(..., ge=-180.0, le=180.0, example=77.5946),
-    radius_km: float = Query(15.0, ge=1.0, le=100.0, description="Search radius in kilometers"),
-    food_type: Optional[str] = Query(None, description="Optional category filter"),
+    latitude: float = Query(
+        ...,
+        ge=-90.0,
+        le=90.0,
+        example=12.9716
+    ),
+    longitude: float = Query(
+        ...,
+        ge=-180.0,
+        le=180.0,
+        example=77.5946
+    ),
+    radius_km: float = Query(
+        15.0,
+        ge=1.0,
+        le=100.0,
+        description="Search radius in kilometers"
+    ),
+    food_type: Optional[str] = Query(
+        None,
+        description="Optional category filter"
+    ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.NGO]))
+    current_user: User = Depends(
+        RoleChecker([UserRole.NGO])
+    )
 ):
     """
     Geospatial PostGIS Query:
@@ -34,36 +70,48 @@ def get_nearby_donations(
     3. Uses ST_Distance to compute exact distance in meters.
     4. Sorts results from closest to furthest.
     """
-    # Create the reference point for the NGO
-    ngo_point = func.ST_SetSRID(func.ST_MakePoint(longitude, latitude), 4326)
 
-    # PostGIS distance expression in meters, converted to kilometers
+    # Create the reference point for the NGO
+    ngo_point = func.ST_SetSRID(
+        func.ST_MakePoint(longitude, latitude),
+        4326
+    )
+
+    # PostGIS distance expression in meters,
+    # converted to kilometers
     distance_in_meters = func.ST_Distance(
         cast(Donation.pickup_location, Geography),
         cast(ngo_point, Geography)
     )
 
     query = (
-        db.query(Donation, (distance_in_meters / 1000.0).label("distance_km"))
+        db.query(
+            Donation,
+            (distance_in_meters / 1000.0).label("distance_km")
+        )
         .filter(
             Donation.status == DonationStatus.AVAILABLE,
             Donation.expires_at > datetime.now(timezone.utc),
             func.ST_DWithin(
                 cast(Donation.pickup_location, Geography),
                 cast(ngo_point, Geography),
-                radius_km * 1000.0  # Convert km to meters
+                radius_km * 1000.0
             )
         )
     )
 
     if food_type:
-        query = query.filter(Donation.food_type == food_type)
+        query = query.filter(
+            Donation.food_type == food_type
+        )
 
     results = query.order_by("distance_km").all()
 
     output = []
+
     for donation, dist_km in results:
         point = to_shape(donation.pickup_location)
+
         output.append(
             NearbyDonationResponse(
                 id=donation.id,
@@ -82,71 +130,167 @@ def get_nearby_donations(
                 created_at=donation.created_at
             )
         )
+
     return output
 
 
-@router.post("/donations/{id}/request", response_model=DonationClaimResponse, status_code=status.HTTP_201_CREATED, summary="Claim/Request Food Donation")
+@router.post(
+    "/donations/{id}/request",
+    response_model=DonationClaimResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Claim/Request Food Donation"
+)
 def request_donation(
     id: uuid.UUID,
     data: DonationClaimRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.NGO]))
+    current_user: User = Depends(
+        RoleChecker([UserRole.NGO])
+    )
 ):
     """
     Allows a verified NGO to place a request for an available food donation.
-    Transitions donation status to REQUESTED.
-    """
-    ngo_profile = current_user.ngo_profile
-    if not ngo_profile:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="NGO profile not found")
 
-    donation = db.query(Donation).filter(Donation.id == id).first()
+    Transitions donation status to ACCEPTED and automatically
+    dispatches a delivery task to the driver queue.
+    """
+
+    # ---------------------------------------------------------
+    # 1. Get NGO profile
+    # ---------------------------------------------------------
+
+    ngo_profile = current_user.ngo_profile
+
+    if not ngo_profile:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="NGO profile not found"
+        )
+
+    # ---------------------------------------------------------
+    # 2. Find donation
+    # ---------------------------------------------------------
+
+    donation = (
+        db.query(Donation)
+        .filter(Donation.id == id)
+        .first()
+    )
+
     if not donation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Donation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Donation not found"
+        )
+
+    # ---------------------------------------------------------
+    # 3. Check donation availability
+    # ---------------------------------------------------------
 
     if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"This food is no longer available. Current status: {donation.status.value}"
+            detail=(
+                f"This food is no longer available. "
+                f"Current status: {donation.status.value}"
+            )
         )
+
+    # ---------------------------------------------------------
+    # 4. Check expiration
+    # ---------------------------------------------------------
 
     if donation.expires_at < datetime.now(timezone.utc):
         donation.status = DonationStatus.EXPIRED
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This donation has expired")
 
-    # Create the request record
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This donation has expired"
+        )
+
+    # ---------------------------------------------------------
+    # 5. Create the request claim
+    # ---------------------------------------------------------
+
     claim = DonationRequest(
         donation_id=donation.id,
         ngo_id=ngo_profile.id,
-        servings_requested=min(data.servings_requested, donation.servings),
-        status=RequestStatus.PENDING,
+        servings_requested=min(
+            data.servings_requested,
+            donation.servings
+        ),
+        status=RequestStatus.APPROVED,
         notes=data.notes
     )
-    # Transition donation status
-    donation.status = DonationStatus.REQUESTED
+
+    # ---------------------------------------------------------
+    # 6. Mark donation as accepted
+    # ---------------------------------------------------------
+
+    donation.status = DonationStatus.ACCEPTED
 
     db.add(claim)
+
+    # ---------------------------------------------------------
+    # 7. Generate claim ID
+    # ---------------------------------------------------------
+
+    db.flush()
+
+    # ---------------------------------------------------------
+    # 8. Automatically dispatch to delivery queue
+    # ---------------------------------------------------------
+
+    new_delivery = Delivery(
+        donation_id=donation.id,
+        request_id=claim.id,
+        ngo_id=ngo_profile.id,
+        status=DeliveryStatus.ASSIGNMENT_PENDING
+    )
+
+    db.add(new_delivery)
+
+    # ---------------------------------------------------------
+    # 9. Save claim + delivery
+    # ---------------------------------------------------------
+
     db.commit()
+
     db.refresh(claim)
 
     return claim
 
 
-@router.get("/claims/my", response_model=List[MyClaimWithDonationResponse], summary="List My Claimed Donations")
+@router.get(
+    "/claims/my",
+    response_model=List[MyClaimWithDonationResponse],
+    summary="List My Claimed Donations"
+)
 def list_my_claims(
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.NGO]))
+    current_user: User = Depends(
+        RoleChecker([UserRole.NGO])
+    )
 ):
-    """Returns all food donation claims placed by this NGO."""
+    """
+    Returns all food donation claims placed by this NGO.
+    """
+
     ngo_profile = current_user.ngo_profile
+
     if not ngo_profile:
         return []
 
     claims = (
         db.query(DonationRequest)
-        .filter(DonationRequest.ngo_id == ngo_profile.id)
-        .order_by(DonationRequest.created_at.desc())
+        .filter(
+            DonationRequest.ngo_id == ngo_profile.id
+        )
+        .order_by(
+            DonationRequest.created_at.desc()
+        )
         .all()
     )
 

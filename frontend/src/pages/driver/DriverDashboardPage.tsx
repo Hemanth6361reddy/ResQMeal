@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
-import { Truck, MapPin, CheckCircle, ArrowRight, PackageCheck, Navigation2, Clock, Loader2, Sparkles, AlertCircle } from "lucide-react";
+import { Truck, MapPin, CheckCircle, PackageCheck, Navigation2, Clock, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { DeliveryRouteMap } from "@/components/maps/DeliveryRouteMap";
 import { apiFetch, getAuthToken, removeAuthToken } from "@/lib/api";
 
 interface Delivery {
@@ -14,6 +15,8 @@ interface Delivery {
   servings: number;
   quantity_kg: number;
   pickup_address: string;
+  pickup_lat: number;
+  pickup_lng: number;
   drop_organization: string;
   drop_address: string;
   status: "ASSIGNMENT_PENDING" | "ACCEPTED" | "PICKED_UP" | "ON_THE_WAY" | "DELIVERED" | "CANCELLED";
@@ -81,7 +84,7 @@ export function DriverDashboardPage() {
       <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
         <AlertCircle className="h-12 w-12 text-primary mb-4" />
         <h2 className="text-2xl font-bold">Authentication Required</h2>
-        <p className="text-muted-foreground mt-2 mb-6">Please log in to access the Delivery Partner Console.</p>
+        <p className="text-muted-foreground mt-2 mb-6">Please log in to access the Driver Console.</p>
         <Link to="/login">
           <Button>Sign In to Driver Portal</Button>
         </Link>
@@ -91,7 +94,7 @@ export function DriverDashboardPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Top Header */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-6 border-b border-border">
         <div>
           <div className="flex items-center gap-2 text-primary text-xs font-semibold uppercase tracking-wider mb-1">
@@ -177,7 +180,7 @@ export function DriverDashboardPage() {
                   </p>
                 </div>
 
-                {/* Step Routing Visualization */}
+                {/* Step Routing Details */}
                 <div className="p-5 rounded-2xl bg-secondary/50 border border-border space-y-4">
                   {/* Pickup Point */}
                   <div className="flex items-start gap-3">
@@ -203,6 +206,19 @@ export function DriverDashboardPage() {
                       <span className="text-xs text-muted-foreground block">{activeTask.drop_address}</span>
                     </div>
                   </div>
+                </div>
+
+                {/* Mapbox Route Map */}
+                <div className="space-y-2">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Interactive Navigation Route</h4>
+                  <DeliveryRouteMap
+                    pickupLat={activeTask.pickup_lat || 12.9716}
+                    pickupLng={activeTask.pickup_lng || 77.5946}
+                    pickupAddress={activeTask.pickup_address}
+                    dropLat={12.9784} // Indiranagar Shelter
+                    dropLng={77.6408}
+                    dropOrganization={activeTask.drop_organization}
+                  />
                 </div>
 
                 {/* State Machine Action Controls */}

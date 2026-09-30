@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Utensils, Clock, MapPin, Sparkles, Loader2, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { LocationPickerMap } from "@/components/maps/LocationPickerMap";
 import { apiFetch } from "@/lib/api";
 
 export function CreateDonationPage() {
@@ -156,7 +157,7 @@ export function CreateDonationPage() {
               </div>
             </div>
 
-            {/* Location & Address */}
+            {/* Address */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <MapPin className="h-4 w-4 text-primary" />
@@ -171,30 +172,16 @@ export function CreateDonationPage() {
               />
             </div>
 
-            {/* Coordinates */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Latitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={formData.latitude}
-                  onChange={(e) => setFormData({ ...formData, latitude: Number(e.target.value) })}
-                  className="w-full h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Longitude</label>
-                <input
-                  type="number"
-                  step="any"
-                  required
-                  value={formData.longitude}
-                  onChange={(e) => setFormData({ ...formData, longitude: Number(e.target.value) })}
-                  className="w-full h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-                />
-              </div>
+            {/* Interactive Mapbox Pin Picker */}
+            <div className="space-y-2 pt-2 border-t border-border">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Set Exact Map Coordinates
+              </label>
+              <LocationPickerMap
+                latitude={formData.latitude}
+                longitude={formData.longitude}
+                onLocationChange={(lat, lng) => setFormData((prev) => ({ ...prev, latitude: lat, longitude: lng }))}
+              />
             </div>
 
             <Button type="submit" disabled={mutation.isPending} size="lg" className="w-full gap-2">

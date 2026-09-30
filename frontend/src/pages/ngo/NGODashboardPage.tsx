@@ -133,6 +133,13 @@ export function NGODashboardPage() {
               My Claims
             </button>
           </div>
+          <Link to="/ngo/explore">
+            <Button size="sm" variant="outline" className="gap-1.5">
+              <MapPin className="h-3.5 w-3.5 text-primary" />
+              <span>Map Radar</span>
+            </Button>
+          </Link>
+          
           <Button variant="ghost" size="sm" onClick={handleLogout}>
             Logout
           </Button>
