@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { Truck, MapPin, CheckCircle, PackageCheck, Navigation2, Clock, Loader2, AlertCircle } from "lucide-react";
@@ -29,6 +29,7 @@ export function DriverDashboardPage() {
   const token = getAuthToken();
 
   const [activeTab, setActiveTab] = useState<"active" | "available" | "history">("active");
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   // 1. Fetch Current Active Task
   const { data: activeTask, isLoading: loadingActive } = useQuery<Delivery | null>({
@@ -38,7 +39,7 @@ export function DriverDashboardPage() {
   });
 
   // 2. Fetch Available Tasks Waiting for Drivers
-  const { data: availableTasks, isLoading: loadingAvailable } = useQuery<Delivery[]>({
+  const { data: availableTasks, isLoading: loadingAvailable, refetch: refetchAvailable } = useQuery<Delivery[]>({
     queryKey: ["availableDeliveries"],
     queryFn: () => apiFetch("/deliveries/available"),
     enabled: !!token && activeTab === "available",
@@ -55,9 +56,13 @@ export function DriverDashboardPage() {
   const acceptMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/deliveries/${id}/accept`, { method: "POST" }),
     onSuccess: () => {
+      setAcceptError(null);
       queryClient.invalidateQueries({ queryKey: ["activeDelivery"] });
       queryClient.invalidateQueries({ queryKey: ["availableDeliveries"] });
       setActiveTab("active");
+    },
+    onError: (err: any) => {
+      setAcceptError(err.message || "Failed to accept task");
     },
   });
 
@@ -68,11 +73,47 @@ export function DriverDashboardPage() {
         method: "PATCH",
         body: JSON.stringify({ status: nextStatus }),
       }),
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ["activeDelivery"] });
       queryClient.invalidateQueries({ queryKey: ["deliveryHistory"] });
+      if (driverSocket.current?.readyState === WebSocket.OPEN) {
+        driverSocket.current.send(
+          JSON.stringify({
+            type: "STATUS_CHANGE",
+            status: variables.nextStatus,
+          })
+        );
+      }
     },
   });
+
+  // 6. Persistent WebSocket for Live Driver Location
+  const driverSocket = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    if (!activeTask?.id) return;
+
+    driverSocket.current = new WebSocket(`ws://localhost:8000/api/v1/ws/delivery/${activeTask.id}`);
+
+    return () => {
+      driverSocket.current?.close();
+    };
+  }, [activeTask?.id]);
+
+  const transmitGPSPulse = () => {
+    if (!driverSocket.current || driverSocket.current.readyState !== WebSocket.OPEN || !activeTask) return;
+
+    const randomOffsetLat = (Math.random() - 0.5) * 0.003;
+    const randomOffsetLng = (Math.random() - 0.5) * 0.003;
+
+    driverSocket.current.send(
+      JSON.stringify({
+        type: "DRIVER_LOCATION",
+        lat: (activeTask.pickup_lat || 12.9716) + randomOffsetLat,
+        lng: (activeTask.pickup_lng || 77.5946) + randomOffsetLng,
+      })
+    );
+  };
 
   const handleLogout = () => {
     removeAuthToken();
@@ -116,7 +157,10 @@ export function DriverDashboardPage() {
               Active Task {activeTask ? "●" : ""}
             </button>
             <button
-              onClick={() => setActiveTab("available")}
+              onClick={() => {
+                setActiveTab("available");
+                refetchAvailable();
+              }}
               className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
                 activeTab === "available" ? "bg-primary text-primary-foreground shadow" : "text-muted-foreground"
               }`}
@@ -182,10 +226,9 @@ export function DriverDashboardPage() {
 
                 {/* Step Routing Details */}
                 <div className="p-5 rounded-2xl bg-secondary/50 border border-border space-y-4">
-                  {/* Pickup Point */}
                   <div className="flex items-start gap-3">
-                    <div className="h-8 w-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                      <MapPin className="h-4 w-4" />
+                    <div className="h-8 w-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5 font-bold">
+                      P
                     </div>
                     <div>
                       <span className="text-xs uppercase font-bold text-muted-foreground block">Pickup Point (Donor)</span>
@@ -195,10 +238,9 @@ export function DriverDashboardPage() {
 
                   <div className="border-l-2 border-dashed border-border ml-4 h-6"></div>
 
-                  {/* Drop Point */}
                   <div className="flex items-start gap-3">
-                    <div className="h-8 w-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 mt-0.5">
-                      <Navigation2 className="h-4 w-4" />
+                    <div className="h-8 w-8 rounded-full bg-primary/20 text-primary flex items-center justify-center shrink-0 mt-0.5 font-bold">
+                      D
                     </div>
                     <div>
                       <span className="text-xs uppercase font-bold text-muted-foreground block">Destination (Shelter)</span>
@@ -215,10 +257,26 @@ export function DriverDashboardPage() {
                     pickupLat={activeTask.pickup_lat || 12.9716}
                     pickupLng={activeTask.pickup_lng || 77.5946}
                     pickupAddress={activeTask.pickup_address}
-                    dropLat={12.9784} // Indiranagar Shelter
+                    dropLat={12.9784}
                     dropLng={77.6408}
                     dropOrganization={activeTask.drop_organization}
                   />
+                </div>
+
+                {/* Live GPS Telemetry Broadcast */}
+                <div className="p-4 rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-between gap-4">
+                  <div>
+                    <span className="text-xs font-bold text-primary block">📡 Live GPS Telemetry Stream</span>
+                    <span className="text-[11px] text-muted-foreground">Broadcasts real-time location to Donor and NGO over WebSocket</span>
+                  </div>
+                  <Button
+                    size="sm"
+                    type="button"
+                    onClick={transmitGPSPulse}
+                    className="bg-primary text-black font-bold hover:bg-primary/90 shrink-0"
+                  >
+                    Transmit GPS Pulse
+                  </Button>
                 </div>
 
                 {/* State Machine Action Controls */}
@@ -272,6 +330,12 @@ export function DriverDashboardPage() {
             <h3 className="text-lg font-bold">Unassigned Deliveries Waiting for Drivers</h3>
             <Badge variant="outline">{availableTasks?.length || 0} Open Tasks</Badge>
           </div>
+
+          {acceptError && (
+            <div className="p-3 text-xs rounded-xl bg-destructive/15 border border-destructive/30 text-destructive">
+              {acceptError}
+            </div>
+          )}
 
           {loadingAvailable ? (
             <div className="flex justify-center py-20">

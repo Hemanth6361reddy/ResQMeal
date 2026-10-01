@@ -9,6 +9,7 @@ import { CreateDonationPage } from "@/pages/donor/CreateDonationPage";
 import { NGODashboardPage } from "@/pages/ngo/NGODashboardPage";
 import { NGOExploreMapPage } from "@/pages/ngo/NGOExploreMapPage";
 import { DriverDashboardPage } from "@/pages/driver/DriverDashboardPage";
+import { LiveDeliveryTrackingPage } from "@/pages/tracking/LiveDeliveryTrackingPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -40,6 +41,9 @@ export default function App() {
 
             {/* Delivery Partner Portal Routes */}
             <Route path="driver/dashboard" element={<DriverDashboardPage />} />
+
+            {/* Live Delivery Tracking Route */}
+            <Route path="track/:deliveryId" element={<LiveDeliveryTrackingPage />} />
 
             <Route path="*" element={<NotFoundPage />} />
           </Route>

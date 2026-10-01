@@ -42,21 +42,20 @@ def serialize_delivery(d: Delivery) -> DeliveryResponse:
     )
 
 
+# ==========================================
+# 1. STATIC PATH ROUTES (MUST COME FIRST!)
+# ==========================================
+
 @router.post("/dispatch/{request_id}", response_model=DeliveryResponse, status_code=status.HTTP_201_CREATED, summary="Dispatch Delivery for Claimed Food")
 def dispatch_delivery(
     request_id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker([UserRole.DONOR, UserRole.NGO, UserRole.ADMIN]))
 ):
-    """
-    Creates a new delivery run from an existing NGO donation claim.
-    Transitions request to APPROVED and delivery to ASSIGNMENT_PENDING.
-    """
     claim = db.query(DonationRequest).filter(DonationRequest.id == request_id).first()
     if not claim:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Donation claim not found")
 
-    # Check if a delivery task was already dispatched for this claim
     existing = db.query(Delivery).filter(Delivery.request_id == request_id).first()
     if existing:
         return serialize_delivery(existing)
@@ -73,7 +72,6 @@ def dispatch_delivery(
     db.add(new_delivery)
     db.commit()
     db.refresh(new_delivery)
-
     return serialize_delivery(new_delivery)
 
 
@@ -82,7 +80,6 @@ def list_available_deliveries(
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
 ):
-    """Returns all unassigned deliveries currently waiting for a driver."""
     deliveries = (
         db.query(Delivery)
         .filter(Delivery.status == DeliveryStatus.ASSIGNMENT_PENDING)
@@ -92,16 +89,71 @@ def list_available_deliveries(
     return [serialize_delivery(d) for d in deliveries]
 
 
+@router.get("/my-active", response_model=Optional[DeliveryResponse], summary="Get Driver's Current Active Task")
+def get_my_active_delivery(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
+):
+    driver_profile = current_user.driver_profile
+    if not driver_profile:
+        return None
+
+    delivery = (
+        db.query(Delivery)
+        .filter(
+            Delivery.driver_id == driver_profile.id,
+            Delivery.status.in_([DeliveryStatus.ACCEPTED, DeliveryStatus.PICKED_UP, DeliveryStatus.ON_THE_WAY])
+        )
+        .first()
+    )
+    if not delivery:
+        return None
+    return serialize_delivery(delivery)
+
+
+@router.get("/my-history", response_model=List[DeliveryResponse], summary="Get Driver's Delivery History")
+def get_my_delivery_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
+):
+    driver_profile = current_user.driver_profile
+    if not driver_profile:
+        return []
+
+    deliveries = (
+        db.query(Delivery)
+        .filter(
+            Delivery.driver_id == driver_profile.id,
+            Delivery.status.in_([DeliveryStatus.DELIVERED, DeliveryStatus.CANCELLED])
+        )
+        .order_by(Delivery.updated_at.desc())
+        .all()
+    )
+    return [serialize_delivery(d) for d in deliveries]
+
+
+# ==========================================
+# 2. PARAMETERIZED ROUTES (COME AFTER STATIC ROUTES!)
+# ==========================================
+
+@router.get("/{id}", response_model=DeliveryResponse, summary="Get Delivery by ID")
+def get_delivery_by_id(
+    id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    delivery = db.query(Delivery).filter(Delivery.id == id).first()
+    if not delivery:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery task not found")
+    return serialize_delivery(delivery)
+
+
 @router.post("/{id}/accept", response_model=DeliveryResponse, summary="Accept Delivery Task")
 def accept_delivery(
     id: uuid.UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
 ):
-    """
-    Atomic assignment lock: assigns the delivery to the calling driver.
-    Transitions status to ACCEPTED.
-    """
     driver_profile = current_user.driver_profile
     if not driver_profile:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Driver profile not found")
@@ -118,7 +170,7 @@ def accept_delivery(
     if active_run:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You already have an active rescue run in progress. Complete it first!"
+            detail="You already have an active rescue run in progress. Please complete it first!"
         )
 
     delivery = db.query(Delivery).filter(Delivery.id == id).first()
@@ -128,7 +180,7 @@ def accept_delivery(
     if delivery.status != DeliveryStatus.ASSIGNMENT_PENDING:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This delivery was already accepted by another partner."
+            detail=f"This task is not available (Status: {delivery.status.value})."
         )
 
     delivery.driver_id = driver_profile.id
@@ -139,24 +191,20 @@ def accept_delivery(
     return serialize_delivery(delivery)
 
 
-@router.patch("/{id}/status", response_model=DeliveryResponse, summary="Update Delivery Status (State Machine)")
+@router.patch("/{id}/status", response_model=DeliveryResponse, summary="Update Delivery Status")
 def update_delivery_status(
     id: uuid.UUID,
     data: DeliveryStatusUpdateRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
 ):
-    """
-    State machine validation:
-    ACCEPTED -> PICKED_UP -> ON_THE_WAY -> DELIVERED
-    """
     driver_profile = current_user.driver_profile
     delivery = db.query(Delivery).filter(Delivery.id == id).first()
     if not delivery:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery not found")
 
     if delivery.driver_id != driver_profile.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not assigned to this delivery")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not assigned to this delivery")
 
     valid_transitions = {
         DeliveryStatus.ACCEPTED: [DeliveryStatus.PICKED_UP, DeliveryStatus.CANCELLED],
@@ -188,48 +236,3 @@ def update_delivery_status(
     db.commit()
     db.refresh(delivery)
     return serialize_delivery(delivery)
-
-
-@router.get("/my-active", response_model=Optional[DeliveryResponse], summary="Get Driver's Current Active Task")
-def get_my_active_delivery(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
-):
-    """Returns the single active delivery the driver is currently executing."""
-    driver_profile = current_user.driver_profile
-    if not driver_profile:
-        return None
-
-    delivery = (
-        db.query(Delivery)
-        .filter(
-            Delivery.driver_id == driver_profile.id,
-            Delivery.status.in_([DeliveryStatus.ACCEPTED, DeliveryStatus.PICKED_UP, DeliveryStatus.ON_THE_WAY])
-        )
-        .first()
-    )
-    if not delivery:
-        return None
-    return serialize_delivery(delivery)
-
-
-@router.get("/my-history", response_model=List[DeliveryResponse], summary="Get Driver's Delivery History")
-def get_my_delivery_history(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DELIVERY_PARTNER]))
-):
-    """Returns past completed rescues conducted by this driver."""
-    driver_profile = current_user.driver_profile
-    if not driver_profile:
-        return []
-
-    deliveries = (
-        db.query(Delivery)
-        .filter(
-            Delivery.driver_id == driver_profile.id,
-            Delivery.status.in_([DeliveryStatus.DELIVERED, DeliveryStatus.CANCELLED])
-        )
-        .order_by(Delivery.updated_at.desc())
-        .all()
-    )
-    return [serialize_delivery(d) for d in deliveries]

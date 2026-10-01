@@ -275,7 +275,8 @@ def list_my_claims(
     )
 ):
     """
-    Returns all food donation claims placed by this NGO.
+    Returns all food donation claims placed by this NGO
+    along with their active delivery ID.
     """
 
     ngo_profile = current_user.ngo_profile
@@ -294,19 +295,33 @@ def list_my_claims(
         .all()
     )
 
-    return [
-        MyClaimWithDonationResponse(
-            claim_id=c.id,
-            donation_id=c.donation.id,
-            title=c.donation.title,
-            food_type=c.donation.food_type,
-            servings=c.donation.servings,
-            servings_requested=c.servings_requested,
-            pickup_address=c.donation.pickup_address,
-            claim_status=c.status,
-            donation_status=c.donation.status,
-            expires_at=c.donation.expires_at,
-            created_at=c.created_at
+    output = []
+
+    for c in claims:
+        # Find the delivery attached to this claim
+        delivery = (
+            db.query(Delivery)
+            .filter(
+                Delivery.request_id == c.id
+            )
+            .first()
         )
-        for c in claims
-    ]
+
+        output.append(
+            MyClaimWithDonationResponse(
+                claim_id=c.id,
+                donation_id=c.donation.id,
+                delivery_id=delivery.id if delivery else None,
+                title=c.donation.title,
+                food_type=c.donation.food_type,
+                servings=c.donation.servings,
+                servings_requested=c.servings_requested,
+                pickup_address=c.donation.pickup_address,
+                claim_status=c.status,
+                donation_status=c.donation.status,
+                expires_at=c.donation.expires_at,
+                created_at=c.created_at
+            )
+        )
+
+    return output

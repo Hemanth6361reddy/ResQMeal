@@ -24,7 +24,10 @@ class NearbyDonationResponse(BaseModel):
 
 class DonationClaimRequest(BaseModel):
     servings_requested: int = Field(..., gt=0, example=30)
-    notes: Optional[str] = Field(None, example="We will distribute this to the children's shelter by 7 PM.")
+    notes: Optional[str] = Field(
+        None,
+        example="We will distribute this to the children's shelter by 7 PM."
+    )
 
 
 class DonationClaimResponse(BaseModel):
@@ -43,6 +46,7 @@ class DonationClaimResponse(BaseModel):
 class MyClaimWithDonationResponse(BaseModel):
     claim_id: uuid.UUID
     donation_id: uuid.UUID
+    delivery_id: Optional[uuid.UUID] = None
     title: str
     food_type: str
     servings: int
