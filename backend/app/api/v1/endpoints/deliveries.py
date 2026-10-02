@@ -20,6 +20,14 @@ router = APIRouter()
 def serialize_delivery(d: Delivery) -> DeliveryResponse:
     """Helper formatting delivery entity into client response with route coordinates."""
     pickup_point = to_shape(d.donation.pickup_location)
+    
+    drop_lat = 12.9784
+    drop_lng = 77.6408
+    if d.ngo and d.ngo.location:
+        ngo_point = to_shape(d.ngo.location)
+        drop_lat = ngo_point.y
+        drop_lng = ngo_point.x
+
     return DeliveryResponse(
         id=d.id,
         donation_id=d.donation_id,
@@ -36,11 +44,12 @@ def serialize_delivery(d: Delivery) -> DeliveryResponse:
         pickup_lng=pickup_point.x,
         drop_organization=d.ngo.organization_name,
         drop_address=d.ngo.address,
+        drop_lat=drop_lat,
+        drop_lng=drop_lng,
         pickup_time=d.pickup_time,
         delivered_time=d.delivered_time,
         created_at=d.created_at
     )
-
 
 # ==========================================
 # 1. STATIC PATH ROUTES (MUST COME FIRST!)

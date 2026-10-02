@@ -31,6 +31,8 @@ class DeliveryResponse(BaseModel):
 
     drop_organization: str
     drop_address: str
+    drop_lat: float = 12.9784
+    drop_lng: float = 77.6408
 
     # Timestamps
     pickup_time: Optional[datetime] = None
