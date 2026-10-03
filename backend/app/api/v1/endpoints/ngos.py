@@ -1,12 +1,14 @@
 from datetime import datetime, timezone
 from typing import List, Optional
 import uuid
+import json
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast
 from geoalchemy2 import Geography
 from geoalchemy2.shape import to_shape
+import redis.asyncio as aioredis
 
 from app.db.session import get_db
 from app.models.user import User
@@ -26,6 +28,7 @@ from app.schemas.request import (
     MyClaimWithDonationResponse
 )
 from app.api.deps import RoleChecker
+from app.core.redis import get_redis
 
 router = APIRouter()
 
@@ -35,7 +38,8 @@ router = APIRouter()
     response_model=List[NearbyDonationResponse],
     summary="Find Nearby Donations (PostGIS Spatial Query)"
 )
-def get_nearby_donations(
+async def get_nearby_donations(
+    response: Response,
     latitude: float = Query(
         ...,
         ge=-90.0,
@@ -59,26 +63,60 @@ def get_nearby_donations(
         description="Optional category filter"
     ),
     db: Session = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
     current_user: User = Depends(
         RoleChecker([UserRole.NGO])
     )
 ):
     """
-    Geospatial PostGIS Query:
-    1. Casts coordinates to Geography to account for Earth's curvature.
-    2. Uses ST_DWithin with spatial index to filter within radius_km.
-    3. Uses ST_Distance to compute exact distance in meters.
-    4. Sorts results from closest to furthest.
+    Geospatial PostGIS Query with Redis caching.
+
+    Cache MISS:
+    Runs the PostGIS spatial query and stores the result
+    in Redis for 60 seconds.
+
+    Cache HIT:
+    Returns the cached result from Redis.
     """
 
-    # Create the reference point for the NGO
+    # ---------------------------------------------------------
+    # 1. Create Redis cache key
+    # ---------------------------------------------------------
+
+    cache_key = (
+        f"cache:nearby:"
+        f"{round(latitude, 4)}:"
+        f"{round(longitude, 4)}:"
+        f"{radius_km}:"
+        f"{food_type or 'all'}"
+    )
+
+    # ---------------------------------------------------------
+    # 2. Check Redis Cache
+    # ---------------------------------------------------------
+
+    if redis:
+        try:
+            cached_data = await redis.get(cache_key)
+
+            if cached_data:
+                response.headers["X-Cache"] = "HIT"
+
+                return json.loads(cached_data)
+
+        except Exception:
+            # Redis failure should not break the main API.
+            pass
+
+    # ---------------------------------------------------------
+    # 3. Cache MISS - Execute PostGIS Query
+    # ---------------------------------------------------------
+
     ngo_point = func.ST_SetSRID(
         func.ST_MakePoint(longitude, latitude),
         4326
     )
 
-    # PostGIS distance expression in meters,
-    # converted to kilometers
     distance_in_meters = func.ST_Distance(
         cast(Donation.pickup_location, Geography),
         cast(ngo_point, Geography)
@@ -107,29 +145,54 @@ def get_nearby_donations(
 
     results = query.order_by("distance_km").all()
 
+    # ---------------------------------------------------------
+    # 4. Build response output
+    # ---------------------------------------------------------
+
     output = []
 
     for donation, dist_km in results:
         point = to_shape(donation.pickup_location)
 
         output.append(
-            NearbyDonationResponse(
-                id=donation.id,
-                donor_id=donation.donor_id,
-                title=donation.title,
-                food_type=donation.food_type,
-                description=donation.description,
-                quantity_kg=donation.quantity_kg,
-                servings=donation.servings,
-                pickup_address=donation.pickup_address,
-                latitude=point.y,
-                longitude=point.x,
-                distance_km=round(dist_km, 2),
-                expires_at=donation.expires_at,
-                status=donation.status,
-                created_at=donation.created_at
-            )
+            {
+                "id": str(donation.id),
+                "donor_id": str(donation.donor_id),
+                "title": donation.title,
+                "food_type": donation.food_type,
+                "description": donation.description,
+                "quantity_kg": donation.quantity_kg,
+                "servings": donation.servings,
+                "pickup_address": donation.pickup_address,
+                "latitude": point.y,
+                "longitude": point.x,
+                "distance_km": round(float(dist_km), 2),
+                "expires_at": donation.expires_at.isoformat(),
+                "status": donation.status.value,
+                "created_at": donation.created_at.isoformat()
+            }
         )
+
+    # ---------------------------------------------------------
+    # 5. Store result in Redis for 60 seconds
+    # ---------------------------------------------------------
+
+    if redis:
+        try:
+            await redis.setex(
+                cache_key,
+                60,
+                json.dumps(output)
+            )
+        except Exception:
+            # Redis failure should not break the main API.
+            pass
+
+    # ---------------------------------------------------------
+    # 6. Mark response as Cache MISS
+    # ---------------------------------------------------------
+
+    response.headers["X-Cache"] = "MISS"
 
     return output
 
@@ -140,19 +203,24 @@ def get_nearby_donations(
     status_code=status.HTTP_201_CREATED,
     summary="Claim/Request Food Donation"
 )
-def request_donation(
+async def request_donation(
     id: uuid.UUID,
     data: DonationClaimRequest,
     db: Session = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
     current_user: User = Depends(
         RoleChecker([UserRole.NGO])
     )
 ):
     """
-    Allows a verified NGO to place a request for an available food donation.
+    Allows a verified NGO to place a request for an available
+    food donation.
 
     Transitions donation status to ACCEPTED and automatically
     dispatches a delivery task to the driver queue.
+
+    Also invalidates nearby Redis caches so that NGOs don't
+    receive stale information about already-claimed food.
     """
 
     # ---------------------------------------------------------
@@ -259,6 +327,21 @@ def request_donation(
     db.commit()
 
     db.refresh(claim)
+
+    # ---------------------------------------------------------
+    # 10. Invalidate nearby search caches
+    # ---------------------------------------------------------
+
+    if redis:
+        try:
+            keys = await redis.keys("cache:nearby:*")
+
+            if keys:
+                await redis.delete(*keys)
+
+        except Exception:
+            # Redis failure should not break claim creation.
+            pass
 
     return claim
 

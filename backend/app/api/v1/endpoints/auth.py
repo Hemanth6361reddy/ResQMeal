@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.security import hash_password, verify_password, create_access_token
+from app.core.rate_limit import RateLimiter
 from app.models.user import User, DonorProfile, NGOProfile, DeliveryPartnerProfile
 from app.models.enums import UserRole
 from app.schemas.auth import UserRegisterRequest, UserLoginRequest, TokenResponse, UserResponse
@@ -95,9 +96,17 @@ def register_user(data: UserRegisterRequest, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/login", response_model=TokenResponse, summary="User Login (JSON Body)")
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    summary="User Login (JSON Body)",
+    dependencies=[Depends(RateLimiter(max_requests=5, window_seconds=60))]
+)
 def login_user(data: UserLoginRequest, db: Session = Depends(get_db)):
-    """Validates user credentials and issues a JWT access token."""
+    """
+    Validates user credentials and issues a JWT access token.
+    Limited to 5 attempts per minute per IP.
+    """
     user = db.query(User).filter(User.email == data.email).first()
     if not user or not verify_password(data.password, user.hashed_password):
         raise HTTPException(
