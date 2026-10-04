@@ -10,6 +10,7 @@ import { NGODashboardPage } from "@/pages/ngo/NGODashboardPage";
 import { NGOExploreMapPage } from "@/pages/ngo/NGOExploreMapPage";
 import { DriverDashboardPage } from "@/pages/driver/DriverDashboardPage";
 import { LiveDeliveryTrackingPage } from "@/pages/tracking/LiveDeliveryTrackingPage";
+import { AdminDashboardPage } from "@/pages/admin/AdminDashboardPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -44,6 +45,9 @@ export default function App() {
 
             {/* Live Delivery Tracking Route */}
             <Route path="track/:deliveryId" element={<LiveDeliveryTrackingPage />} />
+
+            {/* Admin Portal Routes */}
+            <Route path="admin/dashboard" element={<AdminDashboardPage />} />
 
             <Route path="*" element={<NotFoundPage />} />
           </Route>
