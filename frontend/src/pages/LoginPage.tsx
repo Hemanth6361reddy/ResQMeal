@@ -6,6 +6,8 @@ import {
   Mail,
   ArrowRight,
   Loader2,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -24,6 +26,7 @@ export function LoginPage() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,7 +48,7 @@ export function LoginPage() {
         }),
       });
 
-      // Save authentication information
+      // Save authentication token & role
       setAuthToken(data.access_token);
       setUserRole(data.role);
 
@@ -113,23 +116,46 @@ export function LoginPage() {
               </div>
             </div>
 
-            {/* Password */}
+            {/* Password with Show/Hide Toggle & Forgot Password Link */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Password
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Password
+                </label>
+
+                <Link
+                  to="/forgot-password"
+                  className="text-xs text-primary hover:underline font-medium"
+                >
+                  Forgot Password?
+                </Link>
+              </div>
 
               <div className="relative">
                 <Lock className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
 
                 <input
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full h-10 pl-9 pr-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="w-full h-10 pl-9 pr-10 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                 />
+
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-3 text-muted-foreground hover:text-foreground cursor-pointer focus:outline-none"
+                  tabIndex={-1}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
               </div>
             </div>
 
@@ -152,7 +178,7 @@ export function LoginPage() {
               )}
             </Button>
 
-            {/* Register */}
+            {/* Register Link */}
             <p className="text-center text-xs text-muted-foreground pt-4">
               Don't have an account yet?{" "}
               <Link

@@ -7,15 +7,26 @@ from app.models.enums import UserRole, VehicleType
 # ==========================================
 # Registration Schemas
 # ==========================================
+
 class UserRegisterRequest(BaseModel):
     email: EmailStr
-    password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
+    password: str = Field(
+        ...,
+        min_length=6,
+        description="Password must be at least 6 characters"
+    )
     role: UserRole
     phone: Optional[str] = None
 
     # Role-Specific Profile Information
-    organization_name: Optional[str] = Field(None, description="Required for DONOR and NGO")
-    address: Optional[str] = Field(None, description="Required for DONOR and NGO")
+    organization_name: Optional[str] = Field(
+        None,
+        description="Required for DONOR and NGO"
+    )
+    address: Optional[str] = Field(
+        None,
+        description="Required for DONOR and NGO"
+    )
     contact_person: Optional[str] = None  # DONOR
     registration_number: Optional[str] = None  # NGO
     capacity_meals_per_day: Optional[int] = 100  # NGO
@@ -28,6 +39,7 @@ class UserRegisterRequest(BaseModel):
 # ==========================================
 # Login & Token Schemas
 # ==========================================
+
 class UserLoginRequest(BaseModel):
     email: EmailStr
     password: str
@@ -43,6 +55,7 @@ class TokenResponse(BaseModel):
 # ==========================================
 # User Output Schemas
 # ==========================================
+
 class UserResponse(BaseModel):
     id: uuid.UUID
     email: EmailStr
@@ -58,3 +71,23 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==========================================
+# Forgot Password & OTP Schemas
+# ==========================================
+
+class ForgotPasswordOTPRequest(BaseModel):
+    method: str = "email"  # "email" or "phone"
+    identifier: str
+
+
+class ForgotPasswordOTPVerifyRequest(BaseModel):
+    method: str = "email"
+    identifier: str
+    otp: str
+
+
+class ForgotPasswordResetRequest(BaseModel):
+    reset_token: str
+    new_password: str

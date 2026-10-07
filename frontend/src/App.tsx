@@ -11,6 +11,7 @@ import { NGOExploreMapPage } from "@/pages/ngo/NGOExploreMapPage";
 import { DriverDashboardPage } from "@/pages/driver/DriverDashboardPage";
 import { LiveDeliveryTrackingPage } from "@/pages/tracking/LiveDeliveryTrackingPage";
 import { AdminDashboardPage } from "@/pages/admin/AdminDashboardPage";
+import { ForgotPasswordPage } from "@/pages/ForgotPasswordPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 
 const queryClient = new QueryClient({
@@ -31,7 +32,13 @@ export default function App() {
             <Route index element={<LandingPage />} />
             <Route path="login" element={<LoginPage />} />
             <Route path="register" element={<RegisterPage />} />
-            
+
+            <Route path="forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="forgotpassword" element={<ForgotPasswordPage />} />
+            <Route path="forget-password" element={<ForgotPasswordPage />} />
+            <Route path="forgetpassword" element={<ForgotPasswordPage />} />
+            <Route path="forgetpassword" element={<ForgotPasswordPage />} />
+
             {/* Donor Portal Routes */}
             <Route path="donor/dashboard" element={<DonorDashboardPage />} />
             <Route path="donor/create" element={<CreateDonationPage />} />
