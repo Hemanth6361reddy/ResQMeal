@@ -1,21 +1,23 @@
+
 from datetime import datetime, timezone
 from typing import List
 import uuid
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape
-import redis.asyncio as aioredis
 
 from app.db.session import get_db, SessionLocal
 from app.models.user import User
 from app.models.donation import Donation
-from app.models.enums import UserRole, DonationStatus
+from app.models.request import DonationRequest
+from app.models.enums import UserRole, DonationStatus, RequestStatus
 from app.schemas.donation import (
     DonationCreateRequest,
     DonationUpdateRequest,
-    DonationResponse
+    DonationResponse,
 )
 from app.api.deps import get_current_user, RoleChecker
 from app.core.redis import get_redis
@@ -24,7 +26,6 @@ router = APIRouter()
 
 
 def serialize_donation(donation: Donation) -> DonationResponse:
-    """Helper converting PostGIS Point to latitude & longitude floats for JSON response."""
     point = to_shape(donation.pickup_location)
 
     return DonationResponse(
@@ -42,40 +43,35 @@ def serialize_donation(donation: Donation) -> DonationResponse:
         expires_at=donation.expires_at,
         status=donation.status,
         image_url=donation.image_url,
-        created_at=donation.created_at
+        created_at=donation.created_at,
     )
 
 
 def cleanup_expired_donations_background():
-    """
-    Background task running asynchronously out-of-band
-    to expire past-deadline food donations.
-    """
     db = SessionLocal()
 
     try:
         now = datetime.now(timezone.utc)
 
-        expired_count = (
+        count = (
             db.query(Donation)
             .filter(
                 Donation.status == DonationStatus.AVAILABLE,
-                Donation.expires_at < now
+                Donation.expires_at < now,
             )
             .update(
                 {Donation.status: DonationStatus.EXPIRED}
             )
         )
 
-        if expired_count > 0:
-            db.commit()
-            print(
-                f"[Background Task] Cleaned up "
-                f"{expired_count} expired donations."
-            )
+        db.commit()
 
-    except Exception as e:
-        print(f"[Background Task Error]: {e}")
+        if count:
+            print(f"Expired {count} donations.")
+
+    except Exception as exc:
+        db.rollback()
+        print(f"Donation cleanup failed: {exc}")
 
     finally:
         db.close()
@@ -85,137 +81,97 @@ def cleanup_expired_donations_background():
     "",
     response_model=DonationResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create Food Donation"
+    summary="Create Food Donation",
 )
 async def create_donation(
     data: DonationCreateRequest,
     db: Session = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR]))
+    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
 ):
-    """
-    Creates a new food rescue donation listing with PostGIS coordinates.
-    Restricted to verified DONOR role accounts.
+    donor = current_user.donor_profile
 
-    Also invalidates nearby Redis caches so that the new
-    donation appears immediately in nearby searches.
-    """
-
-    donor_profile = current_user.donor_profile
-
-    if not donor_profile:
+    if not donor:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Donor profile missing. Please complete registration profile."
+            status_code=400,
+            detail="Donor profile not found.",
         )
 
-    # Convert coordinates into PostGIS WKT Point:
-    # POINT(longitude latitude)
-    pickup_point = WKTElement(
-        f"POINT({data.longitude} {data.latitude})",
-        srid=4326
-    )
-
-    new_donation = Donation(
-        donor_id=donor_profile.id,
+    donation = Donation(
+        donor_id=donor.id,
         title=data.title,
         food_type=data.food_type,
         description=data.description,
         quantity_kg=data.quantity_kg,
         servings=data.servings,
         pickup_address=data.pickup_address,
-        pickup_location=pickup_point,
+        pickup_location=WKTElement(
+            f"POINT({data.longitude} {data.latitude})",
+            srid=4326,
+        ),
         available_from=data.available_from,
         expires_at=data.expires_at,
         status=DonationStatus.AVAILABLE,
-        image_url=data.image_url
+        image_url=data.image_url,
     )
 
-    db.add(new_donation)
+    db.add(donation)
     db.commit()
-    db.refresh(new_donation)
-
-    # ---------------------------------------------------------
-    # Invalidate nearby search caches
-    # ---------------------------------------------------------
-    #
-    # A new donation can change the result of nearby searches.
-    # Remove all cached nearby results so NGOs receive fresh data.
-    #
+    db.refresh(donation)
 
     if redis:
         try:
-            keys = await redis.keys("cache:nearby:*")
+            async for key in redis.scan_iter(match="cache:nearby:*"):
+                await redis.delete(key)
+        except Exception as exc:
+            print(f"Redis invalidation failed: {exc}")
 
-            if keys:
-                await redis.delete(*keys)
-
-        except Exception:
-            # Redis failure should not break donation creation.
-            pass
-
-    return serialize_donation(new_donation)
+    return serialize_donation(donation)
 
 
 @router.get(
     "/my",
     response_model=List[DonationResponse],
-    summary="List My Donations"
+    summary="List My Donations",
 )
 def list_my_donations(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR]))
+    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
 ):
-    """
-    Returns all donations created by the currently authenticated donor.
+    background_tasks.add_task(cleanup_expired_donations_background)
 
-    Also schedules a background task to clean up expired donations
-    without delaying the API response.
-    """
+    donor = current_user.donor_profile
 
-    # Schedule background cleanup without delaying this response
-    background_tasks.add_task(
-        cleanup_expired_donations_background
-    )
-
-    donor_profile = current_user.donor_profile
-
-    if not donor_profile:
+    if not donor:
         return []
 
     donations = (
         db.query(Donation)
-        .filter(Donation.donor_id == donor_profile.id)
+        .filter(Donation.donor_id == donor.id)
         .order_by(Donation.created_at.desc())
         .all()
     )
 
-    return [serialize_donation(d) for d in donations]
+    return [serialize_donation(item) for item in donations]
 
 
 @router.get(
     "/{id}",
     response_model=DonationResponse,
-    summary="Get Donation Details"
+    summary="Get Donation Details",
 )
 def get_donation(
     id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
-    """Fetches details for a specific donation."""
-
-    donation = (
-        db.query(Donation)
-        .filter(Donation.id == id)
-        .first()
-    )
+    donation = db.query(Donation).filter(Donation.id == id).first()
 
     if not donation:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation not found"
+            status_code=404,
+            detail="Donation not found.",
         )
 
     return serialize_donation(donation)
@@ -224,47 +180,38 @@ def get_donation(
 @router.patch(
     "/{id}",
     response_model=DonationResponse,
-    summary="Edit Donation Details"
+    summary="Edit Donation Details",
 )
 def update_donation(
     id: uuid.UUID,
     data: DonationUpdateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR]))
+    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
 ):
-    """Allows donor to update food quantity or expiry before pickup."""
-
-    donation = (
-        db.query(Donation)
-        .filter(Donation.id == id)
-        .first()
-    )
+    donation = db.query(Donation).filter(Donation.id == id).first()
 
     if not donation:
+        raise HTTPException(status_code=404, detail="Donation not found.")
+
+    donor = current_user.donor_profile
+
+    if not donor or donation.donor_id != donor.id:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation not found"
+            status_code=403,
+            detail="You can only edit your own donations.",
         )
 
-    if donation.donor_id != current_user.donor_profile.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only edit your own donations"
-        )
-
-    if donation.status not in [
+    if donation.status not in (
         DonationStatus.AVAILABLE,
-        DonationStatus.REQUESTED
-    ]:
+        DonationStatus.REQUESTED,
+    ):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot edit a donation already picked up or delivered"
+            status_code=400,
+            detail="This donation can no longer be edited.",
         )
 
-    update_dict = data.model_dump(exclude_unset=True)
-
-    for key, value in update_dict.items():
-        setattr(donation, key, value)
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(donation, field, value)
 
     db.commit()
     db.refresh(donation)
@@ -272,49 +219,94 @@ def update_donation(
     return serialize_donation(donation)
 
 
+@router.patch(
+    "/{id}/cancel",
+    response_model=DonationResponse,
+    summary="Cancel Food Donation Listing",
+)
 @router.delete(
     "/{id}/cancel",
     response_model=DonationResponse,
-    summary="Cancel Food Donation"
+    summary="Cancel Food Donation Listing",
 )
-def cancel_donation(
+async def cancel_donation(
     id: uuid.UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR]))
+    redis: aioredis.Redis = Depends(get_redis),
+    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
 ):
-    """Cancels an available food listing."""
+    # 1. Validate donor profile.
+    donor = current_user.donor_profile
 
-    donation = (
-        db.query(Donation)
-        .filter(Donation.id == id)
-        .first()
-    )
+    if not donor:
+        raise HTTPException(
+            status_code=400,
+            detail="Donor profile not found.",
+        )
+
+    # 2. Find the donation.
+    donation = db.query(Donation).filter(Donation.id == id).first()
 
     if not donation:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation not found"
+            status_code=404,
+            detail="Donation listing not found.",
         )
 
-    if donation.donor_id != current_user.donor_profile.id:
+    # 3. Verify ownership.
+    if donation.donor_id != donor.id:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only cancel your own donations"
+            status_code=403,
+            detail="You cannot cancel another donor's listing.",
         )
 
-    if donation.status in [
-        DonationStatus.PICKED_UP,
-        DonationStatus.ON_THE_WAY,
-        DonationStatus.DELIVERED
-    ]:
+    # 4. Allow cancellation only while available.
+    if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot cancel a donation already picked up by a driver"
+            status_code=400,
+            detail=(
+                f"Cannot cancel donation with status "
+                f"'{donation.status.value}'. Only AVAILABLE "
+                f"donations can be cancelled."
+            ),
         )
 
-    donation.status = DonationStatus.CANCELLED
+    # 5. Reject donations with active NGO requests.
+    active_request = (
+        db.query(DonationRequest.id)
+        .filter(
+            DonationRequest.donation_id == donation.id,
+            DonationRequest.status.in_(
+                [RequestStatus.PENDING, RequestStatus.APPROVED]
+            ),
+        )
+        .first()
+    )
 
-    db.commit()
-    db.refresh(donation)
+    if active_request:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot cancel donation because an NGO has "
+                "an active request for this food."
+            ),
+        )
+
+    # 6. Cancel the donation.
+    try:
+        donation.status = DonationStatus.CANCELLED
+        db.commit()
+        db.refresh(donation)
+    except Exception:
+        db.rollback()
+        raise
+
+    # 7. Clear nearby-food caches.
+    if redis:
+        try:
+            async for key in redis.scan_iter(match="cache:nearby:*"):
+                await redis.delete(key)
+        except Exception as exc:
+            print(f"Redis invalidation failed: {exc}")
 
     return serialize_donation(donation)
