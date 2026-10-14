@@ -1,6 +1,7 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 import uuid
+
 from pydantic import BaseModel, Field
 from app.models.enums import RequestStatus, DonationStatus
 
@@ -20,6 +21,10 @@ class NearbyDonationResponse(BaseModel):
     expires_at: datetime
     status: DonationStatus
     created_at: datetime
+    media_urls: List[str] = Field(default_factory=list)
+
+    class Config:
+        from_attributes = True
 
 
 class DonationClaimRequest(BaseModel):

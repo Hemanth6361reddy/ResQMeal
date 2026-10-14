@@ -1,16 +1,45 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Utensils, Clock, MapPin, Sparkles, Loader2, ArrowLeft } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
+import { 
+  Utensils, 
+  Clock, 
+  MapPin, 
+  Sparkles, 
+  Loader2, 
+  ArrowLeft, 
+  UploadCloud, 
+  Camera, 
+  Video, 
+  X, 
+  Image as ImageIcon, 
+  AlertCircle, 
+  CheckCircle2 
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { LocationPickerMap } from "@/components/maps/LocationPickerMap";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getAuthToken, resolveMediaUrl } from "@/lib/api";
+
+interface UploadedMediaItem {
+  id: string;
+  url: string;
+  media_type: "image" | "video";
+  filename: string;
+}
 
 export function CreateDonationPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const token = getAuthToken();
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+
+  // Form State
   const [formData, setFormData] = useState({
     title: "",
     food_type: "Cooked Meals",
@@ -23,6 +52,80 @@ export function CreateDonationPage() {
     hours_until_expiry: 4,
   });
 
+  // Uploaded Media URLs array
+  const [mediaItems, setMediaItems] = useState<UploadedMediaItem[]>([]);
+
+  // 1. Upload File Handler
+  const handleUploadFiles = async (files: FileList | File[]) => {
+    setMediaError(null);
+
+    if (mediaItems.length + files.length > 5) {
+      setMediaError("Maximum 5 media files allowed per donation listing.");
+      return;
+    }
+
+    const videoCount = mediaItems.filter((m) => m.media_type === "video").length;
+    const newVideos = Array.from(files).filter((f) => f.type.startsWith("video/")).length;
+    if (videoCount + newVideos > 1) {
+      setMediaError("You can upload at most 1 short video per listing.");
+      return;
+    }
+
+    setUploading(true);
+
+    for (const file of Array.from(files)) {
+      // Client-side quick size validation
+      if (file.type.startsWith("image/") && file.size > 10 * 1024 * 1024) {
+        setMediaError(`Image '${file.name}' exceeds 10MB limit.`);
+        continue;
+      }
+      if (file.type.startsWith("video/") && file.size > 30 * 1024 * 1024) {
+        setMediaError(`Video '${file.name}' exceeds 30MB limit.`);
+        continue;
+      }
+
+      try {
+        const formDataPayload = new FormData();
+        formDataPayload.append("file", file);
+
+        const response = await fetch("http://localhost:8000/api/v1/donations/upload-media", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          body: formDataPayload,
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.detail || "Failed to upload file.");
+        }
+
+        const data = await response.json();
+        const resolvedUrl = resolveMediaUrl(data.url);
+        setMediaItems((prev) => [
+          ...prev,
+          {
+            id: Math.random().toString(),
+            url: resolvedUrl,
+            media_type: data.media_type,
+            filename: data.filename,
+          },
+        ]);
+      } catch (err: any) {
+        setMediaError(err.message || `Upload failed for ${file.name}`);
+      }
+    }
+
+    setUploading(false);
+  };
+
+  // Remove a media item
+  const handleRemoveMedia = (index: number) => {
+    setMediaItems((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // 2. Submit Mutation
   const mutation = useMutation({
     mutationFn: async () => {
       const expiresAt = new Date();
@@ -40,11 +143,13 @@ export function CreateDonationPage() {
           latitude: Number(formData.latitude),
           longitude: Number(formData.longitude),
           expires_at: expiresAt.toISOString(),
+          media_urls: mediaItems.map((m) => m.url),
         }),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["myDonations"] });
+      queryClient.invalidateQueries({ queryKey: ["nearbyDonations"] });
       navigate("/donor/dashboard");
     },
   });
@@ -136,33 +241,140 @@ export function CreateDonationPage() {
               </div>
             </div>
 
-            {/* Shelf-Life Expiry Hours */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <Clock className="h-4 w-4 text-primary" />
-                <span>Pickup Window Deadline (Shelf Life)</span>
-              </label>
-              <div className="flex items-center gap-3">
+            {/* NEW SECTION: FOOD PHOTOS / VIDEO UPLOAD */}
+            <div className="space-y-3 pt-2 border-t border-border">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                  <Camera className="h-4 w-4 text-primary" />
+                  <span>Food Photos / Video</span>
+                </label>
+                <span className="text-[11px] text-muted-foreground">{mediaItems.length}/5 uploaded</span>
+              </div>
+
+              {mediaError && (
+                <div className="p-3 text-xs rounded-xl bg-destructive/15 border border-destructive/30 text-destructive flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{mediaError}</span>
+                </div>
+              )}
+
+              {/* Drag-and-Drop Area */}
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragging(true);
+                }}
+                onDragLeave={() => setIsDragging(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragging(false);
+                  if (e.dataTransfer.files) handleUploadFiles(e.dataTransfer.files);
+                }}
+                onClick={() => fileInputRef.current?.click()}
+                className={`relative p-6 rounded-2xl border-2 border-dashed transition-all cursor-pointer flex flex-col items-center justify-center text-center ${
+                  isDragging
+                    ? "border-primary bg-primary/10 scale-[1.01]"
+                    : "border-border hover:border-primary/60 bg-secondary/30 hover:bg-secondary/50"
+                }`}
+              >
                 <input
-                  type="range"
-                  min="1"
-                  max="24"
-                  value={formData.hours_until_expiry}
-                  onChange={(e) => setFormData({ ...formData, hours_until_expiry: Number(e.target.value) })}
-                  className="flex-1 accent-primary cursor-pointer"
+                  type="file"
+                  ref={fileInputRef}
+                  multiple
+                  accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
+                  onChange={(e) => e.target.files && handleUploadFiles(e.target.files)}
+                  className="hidden"
                 />
-                <span className="w-24 text-right text-sm font-bold text-primary">
-                  {formData.hours_until_expiry} Hours
+
+                <div className="flex items-center gap-2 text-primary mb-2">
+                  <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20">
+                    {uploading ? (
+                      <Loader2 className="h-6 w-6 animate-spin" />
+                    ) : (
+                      <UploadCloud className="h-6 w-6" />
+                    )}
+                  </div>
+                </div>
+
+                <span className="text-sm font-bold text-foreground">
+                  {uploading ? "Uploading media securely..." : "Add Photos / Video"}
+                </span>
+                <p className="text-xs text-muted-foreground mt-1 max-w-sm">
+                  Drag & drop food photos or a short video, or click to browse.
+                </p>
+                <span className="text-[10px] text-primary font-mono mt-2">
+                  JPG, PNG, WEBP (≤10MB) • MP4, WEBM (≤30MB)
                 </span>
               </div>
+
+              {/* Preview Grid */}
+              {mediaItems.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 pt-2">
+                  <AnimatePresence>
+                    {mediaItems.map((item, idx) => (
+                      <motion.div
+                        key={item.id}
+                        initial={{ opacity: 0, scale: 0.85 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.85 }}
+                        className="group relative rounded-xl overflow-hidden border border-border bg-card shadow-sm aspect-square flex items-center justify-center"
+                      >
+                        {item.media_type === "image" ? (
+                          <img
+                            src={resolveMediaUrl(item.url)}
+                            alt="Food preview"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          />
+                        ) : (
+                          <div className="relative w-full h-full bg-black flex items-center justify-center">
+                            <video src={resolveMediaUrl(item.url)} className="w-full h-full object-cover" muted />
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                              <Video className="h-6 w-6 text-white" />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Top Badge */}
+                        <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white uppercase tracking-wider backdrop-blur">
+                          {item.media_type}
+                        </span>
+
+                        {/* Delete Button */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleRemoveMedia(idx);
+                          }}
+                          className="absolute top-1.5 right-1.5 p-1 rounded-full bg-destructive text-destructive-foreground opacity-90 hover:opacity-100 hover:scale-110 transition-all cursor-pointer shadow-md"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+
+            {/* Expiry Hours */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pickup Window Deadline (Hours from now)</label>
+              <select
+                value={formData.hours_until_expiry}
+                onChange={(e) => setFormData({ ...formData, hours_until_expiry: Number(e.target.value) })}
+                className="w-full h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+              >
+                <option value={2}>2 Hours (Immediate rescue needed)</option>
+                <option value={4}>4 Hours (Standard cooked food window)</option>
+                <option value={8}>8 Hours (End of event / function)</option>
+                <option value={24}>24 Hours (Next morning pickup)</option>
+              </select>
             </div>
 
             {/* Address */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <MapPin className="h-4 w-4 text-primary" />
-                <span>Pickup Address</span>
-              </label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pickup Address</label>
               <input
                 type="text"
                 required
@@ -172,20 +384,25 @@ export function CreateDonationPage() {
               />
             </div>
 
-            {/* Interactive Mapbox Pin Picker */}
-            <div className="space-y-2 pt-2 border-t border-border">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Set Exact Map Coordinates
-              </label>
+            {/* Map Location Picker */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span className="font-semibold uppercase tracking-wider">Pin Location on Map</span>
+                <span className="text-primary font-mono text-[11px]">
+                  {formData.latitude.toFixed(4)}, {formData.longitude.toFixed(4)}
+                </span>
+              </div>
               <LocationPickerMap
-                latitude={formData.latitude}
-                longitude={formData.longitude}
-                onLocationChange={(lat, lng) => setFormData((prev) => ({ ...prev, latitude: lat, longitude: lng }))}
+                initialLat={formData.latitude}
+                initialLng={formData.longitude}
+                onLocationSelect={(lat, lng) => {
+                  setFormData((prev) => ({ ...prev, latitude: lat, longitude: lng }));
+                }}
               />
             </div>
 
-            <Button type="submit" disabled={mutation.isPending} size="lg" className="w-full gap-2">
-              {mutation.isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Utensils className="h-5 w-5" />}
+            <Button type="submit" disabled={mutation.isPending} className="w-full gap-2 shadow-lg">
+              {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
               <span>Publish Donation Listing</span>
             </Button>
           </form>

@@ -27,6 +27,7 @@ class Donation(Base, UUIDMixin, TimestampMixin):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     status: Mapped[DonationStatus] = mapped_column(SQLEnum(DonationStatus), default=DonationStatus.AVAILABLE, nullable=False, index=True)
     image_url: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    media_urls: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Relationship back to donor
     donor: Mapped["DonorProfile"] = relationship("DonorProfile", back_populates="donations")

@@ -1,14 +1,25 @@
-
+import os
+import json
+import uuid
 from datetime import datetime, timezone
 from typing import List
-import uuid
 
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    status,
+    BackgroundTasks,
+    UploadFile,
+    File,
+    Request,
+)
 from sqlalchemy.orm import Session
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.shape import to_shape
 
+from app.core.config import UPLOAD_DIR
 from app.db.session import get_db, SessionLocal
 from app.models.user import User
 from app.models.donation import Donation
@@ -22,11 +33,65 @@ from app.schemas.donation import (
 from app.api.deps import get_current_user, RoleChecker
 from app.core.redis import get_redis
 
+
 router = APIRouter()
 
 
+# --------------------------------------------------
+# Media upload configuration
+# --------------------------------------------------
+
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/jpg",
+}
+
+ALLOWED_VIDEO_TYPES = {
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+}
+
+MAX_IMAGE_SIZE = 10 * 1024 * 1024
+MAX_VIDEO_SIZE = 30 * 1024 * 1024
+
+# Map validated MIME types to server-controlled extensions.
+MIME_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
+
+
+# --------------------------------------------------
+# Helper: serialize donation
+# --------------------------------------------------
+
 def serialize_donation(donation: Donation) -> DonationResponse:
     point = to_shape(donation.pickup_location)
+
+    media = getattr(donation, "media_urls", None)
+
+    if not media:
+        media = []
+    elif isinstance(media, str):
+        try:
+            parsed_media = json.loads(media)
+            media = (
+                parsed_media
+                if isinstance(parsed_media, list)
+                else [media]
+            )
+        except (json.JSONDecodeError, TypeError):
+            media = [media]
+    elif not isinstance(media, list):
+        media = []
 
     return DonationResponse(
         id=donation.id,
@@ -43,9 +108,14 @@ def serialize_donation(donation: Donation) -> DonationResponse:
         expires_at=donation.expires_at,
         status=donation.status,
         image_url=donation.image_url,
+        media_urls=media,
         created_at=donation.created_at,
     )
 
+
+# --------------------------------------------------
+# Background task: expire old donations
+# --------------------------------------------------
 
 def cleanup_expired_donations_background():
     db = SessionLocal()
@@ -77,6 +147,10 @@ def cleanup_expired_donations_background():
         db.close()
 
 
+# --------------------------------------------------
+# Create donation
+# --------------------------------------------------
+
 @router.post(
     "",
     response_model=DonationResponse,
@@ -87,15 +161,19 @@ async def create_donation(
     data: DonationCreateRequest,
     db: Session = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
+    current_user: User = Depends(
+        RoleChecker([UserRole.DONOR])
+    ),
 ):
     donor = current_user.donor_profile
 
     if not donor:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Donor profile not found.",
         )
+
+    media_urls = data.media_urls or []
 
     donation = Donation(
         donor_id=donor.id,
@@ -113,6 +191,7 @@ async def create_donation(
         expires_at=data.expires_at,
         status=DonationStatus.AVAILABLE,
         image_url=data.image_url,
+        media_urls=json.dumps(media_urls) if media_urls else None,
     )
 
     db.add(donation)
@@ -121,13 +200,19 @@ async def create_donation(
 
     if redis:
         try:
-            async for key in redis.scan_iter(match="cache:nearby:*"):
+            async for key in redis.scan_iter(
+                match="cache:nearby:*"
+            ):
                 await redis.delete(key)
         except Exception as exc:
             print(f"Redis invalidation failed: {exc}")
 
     return serialize_donation(donation)
 
+
+# --------------------------------------------------
+# List current donor's donations
+# --------------------------------------------------
 
 @router.get(
     "/my",
@@ -137,9 +222,13 @@ async def create_donation(
 def list_my_donations(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
+    current_user: User = Depends(
+        RoleChecker([UserRole.DONOR])
+    ),
 ):
-    background_tasks.add_task(cleanup_expired_donations_background)
+    background_tasks.add_task(
+        cleanup_expired_donations_background
+    )
 
     donor = current_user.donor_profile
 
@@ -153,8 +242,15 @@ def list_my_donations(
         .all()
     )
 
-    return [serialize_donation(item) for item in donations]
+    return [
+        serialize_donation(item)
+        for item in donations
+    ]
 
+
+# --------------------------------------------------
+# Get donation details
+# --------------------------------------------------
 
 @router.get(
     "/{id}",
@@ -166,16 +262,24 @@ def get_donation(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    donation = db.query(Donation).filter(Donation.id == id).first()
+    donation = (
+        db.query(Donation)
+        .filter(Donation.id == id)
+        .first()
+    )
 
     if not donation:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Donation not found.",
         )
 
     return serialize_donation(donation)
 
+
+# --------------------------------------------------
+# Update donation
+# --------------------------------------------------
 
 @router.patch(
     "/{id}",
@@ -186,18 +290,27 @@ def update_donation(
     id: uuid.UUID,
     data: DonationUpdateRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
+    current_user: User = Depends(
+        RoleChecker([UserRole.DONOR])
+    ),
 ):
-    donation = db.query(Donation).filter(Donation.id == id).first()
+    donation = (
+        db.query(Donation)
+        .filter(Donation.id == id)
+        .first()
+    )
 
     if not donation:
-        raise HTTPException(status_code=404, detail="Donation not found.")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Donation not found.",
+        )
 
     donor = current_user.donor_profile
 
     if not donor or donation.donor_id != donor.id:
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only edit your own donations.",
         )
 
@@ -206,11 +319,13 @@ def update_donation(
         DonationStatus.REQUESTED,
     ):
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="This donation can no longer be edited.",
         )
 
-    for field, value in data.model_dump(exclude_unset=True).items():
+    for field, value in data.model_dump(
+        exclude_unset=True
+    ).items():
         setattr(donation, field, value)
 
     db.commit()
@@ -218,6 +333,10 @@ def update_donation(
 
     return serialize_donation(donation)
 
+
+# --------------------------------------------------
+# Cancel donation
+# --------------------------------------------------
 
 @router.patch(
     "/{id}/cancel",
@@ -233,37 +352,39 @@ async def cancel_donation(
     id: uuid.UUID,
     db: Session = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
-    current_user: User = Depends(RoleChecker([UserRole.DONOR])),
+    current_user: User = Depends(
+        RoleChecker([UserRole.DONOR])
+    ),
 ):
-    # 1. Validate donor profile.
     donor = current_user.donor_profile
 
     if not donor:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail="Donor profile not found.",
         )
 
-    # 2. Find the donation.
-    donation = db.query(Donation).filter(Donation.id == id).first()
+    donation = (
+        db.query(Donation)
+        .filter(Donation.id == id)
+        .first()
+    )
 
     if not donation:
         raise HTTPException(
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail="Donation listing not found.",
         )
 
-    # 3. Verify ownership.
     if donation.donor_id != donor.id:
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail="You cannot cancel another donor's listing.",
         )
 
-    # 4. Allow cancellation only while available.
     if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"Cannot cancel donation with status "
                 f"'{donation.status.value}'. Only AVAILABLE "
@@ -271,13 +392,15 @@ async def cancel_donation(
             ),
         )
 
-    # 5. Reject donations with active NGO requests.
     active_request = (
         db.query(DonationRequest.id)
         .filter(
             DonationRequest.donation_id == donation.id,
             DonationRequest.status.in_(
-                [RequestStatus.PENDING, RequestStatus.APPROVED]
+                [
+                    RequestStatus.PENDING,
+                    RequestStatus.APPROVED,
+                ]
             ),
         )
         .first()
@@ -285,14 +408,13 @@ async def cancel_donation(
 
     if active_request:
         raise HTTPException(
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Cannot cancel donation because an NGO has "
                 "an active request for this food."
             ),
         )
 
-    # 6. Cancel the donation.
     try:
         donation.status = DonationStatus.CANCELLED
         db.commit()
@@ -301,12 +423,109 @@ async def cancel_donation(
         db.rollback()
         raise
 
-    # 7. Clear nearby-food caches.
     if redis:
         try:
-            async for key in redis.scan_iter(match="cache:nearby:*"):
+            async for key in redis.scan_iter(
+                match="cache:nearby:*"
+            ):
                 await redis.delete(key)
         except Exception as exc:
             print(f"Redis invalidation failed: {exc}")
 
     return serialize_donation(donation)
+
+
+# --------------------------------------------------
+# Upload donation photo or video
+# --------------------------------------------------
+
+@router.post(
+    "/upload-media",
+    summary="Upload Food Photos or Video",
+)
+async def upload_donation_media(
+    request: Request,
+    file: UploadFile = File(...),
+    current_user: User = Depends(
+        RoleChecker([UserRole.DONOR])
+    ),
+):
+    donor = current_user.donor_profile
+
+    if not donor:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Donor profile not found.",
+        )
+
+    content_type = (
+        (file.content_type or "").lower().strip()
+    )
+
+    if (
+        content_type not in ALLOWED_IMAGE_TYPES
+        and content_type not in ALLOWED_VIDEO_TYPES
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Unsupported format. Only JPG, PNG, WEBP "
+                "images and MP4, WEBM, MOV videos are allowed."
+            ),
+        )
+
+    is_image = content_type in ALLOWED_IMAGE_TYPES
+    max_size = MAX_IMAGE_SIZE if is_image else MAX_VIDEO_SIZE
+
+    try:
+        # Read at most one byte beyond the limit to detect
+        # oversized uploads without loading an unlimited file.
+        content = await file.read(max_size + 1)
+
+        if len(content) > max_size:
+            limit_message = (
+                "Image size exceeds the 10MB maximum limit."
+                if is_image
+                else "Video size exceeds the 30MB maximum limit."
+            )
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=limit_message,
+            )
+
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The uploaded file is empty.",
+            )
+
+        # Use an extension determined by the accepted MIME type,
+        # not the untrusted filename supplied by the client.
+        extension = MIME_EXTENSIONS[content_type]
+        unique_filename = f"food_{uuid.uuid4().hex}{extension}"
+
+        # Use the same standardized directory as main.py.
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+        file_path = os.path.join(
+            UPLOAD_DIR,
+            unique_filename,
+        )
+
+        with open(file_path, "xb") as uploaded_file:
+            uploaded_file.write(content)
+
+        # Build the public URL from the current request host.
+        media_url = str(
+            request.base_url
+        ).rstrip("/") + f"/uploads/{unique_filename}"
+
+        return {
+            "url": media_url,
+            "media_type": "image" if is_image else "video",
+            "filename": unique_filename,
+        }
+
+    finally:
+        await file.close()

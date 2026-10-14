@@ -19,13 +19,13 @@ from app.models.enums import (
     UserRole,
     DonationStatus,
     RequestStatus,
-    DeliveryStatus
+    DeliveryStatus,
 )
 from app.schemas.request import (
     NearbyDonationResponse,
     DonationClaimRequest,
     DonationClaimResponse,
-    MyClaimWithDonationResponse
+    MyClaimWithDonationResponse,
 )
 from app.api.deps import RoleChecker
 from app.core.redis import get_redis
@@ -36,7 +36,7 @@ router = APIRouter()
 @router.get(
     "/nearby",
     response_model=List[NearbyDonationResponse],
-    summary="Find Nearby Donations (PostGIS Spatial Query)"
+    summary="Find Nearby Donations (PostGIS Spatial Query)",
 )
 async def get_nearby_donations(
     response: Response,
@@ -44,45 +44,40 @@ async def get_nearby_donations(
         ...,
         ge=-90.0,
         le=90.0,
-        example=12.9716
+        example=12.9716,
     ),
     longitude: float = Query(
         ...,
         ge=-180.0,
         le=180.0,
-        example=77.5946
+        example=77.5946,
     ),
     radius_km: float = Query(
         15.0,
         ge=1.0,
         le=100.0,
-        description="Search radius in kilometers"
+        description="Search radius in kilometers",
     ),
     food_type: Optional[str] = Query(
         None,
-        description="Optional category filter"
+        description="Optional category filter",
     ),
     db: Session = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
-    current_user: User = Depends(
-        RoleChecker([UserRole.NGO])
-    )
+    current_user: User = Depends(RoleChecker([UserRole.NGO])),
 ):
     """
-    Geospatial PostGIS Query with Redis caching.
+    Geospatial PostGIS query with Redis caching.
 
     Cache MISS:
-    Runs the PostGIS spatial query and stores the result
-    in Redis for 60 seconds.
+        Runs the PostGIS spatial query and stores the result
+        in Redis for 60 seconds.
 
     Cache HIT:
-    Returns the cached result from Redis.
+        Returns the cached result from Redis.
     """
 
-    # ---------------------------------------------------------
     # 1. Create Redis cache key
-    # ---------------------------------------------------------
-
     cache_key = (
         f"cache:nearby:"
         f"{round(latitude, 4)}:"
@@ -91,41 +86,34 @@ async def get_nearby_donations(
         f"{food_type or 'all'}"
     )
 
-    # ---------------------------------------------------------
-    # 2. Check Redis Cache
-    # ---------------------------------------------------------
-
+    # 2. Check Redis cache
     if redis:
         try:
             cached_data = await redis.get(cache_key)
 
             if cached_data:
                 response.headers["X-Cache"] = "HIT"
-
                 return json.loads(cached_data)
 
         except Exception:
             # Redis failure should not break the main API.
             pass
 
-    # ---------------------------------------------------------
-    # 3. Cache MISS - Execute PostGIS Query
-    # ---------------------------------------------------------
-
+    # 3. Execute PostGIS query
     ngo_point = func.ST_SetSRID(
         func.ST_MakePoint(longitude, latitude),
-        4326
+        4326,
     )
 
     distance_in_meters = func.ST_Distance(
         cast(Donation.pickup_location, Geography),
-        cast(ngo_point, Geography)
+        cast(ngo_point, Geography),
     )
 
     query = (
         db.query(
             Donation,
-            (distance_in_meters / 1000.0).label("distance_km")
+            (distance_in_meters / 1000.0).label("distance_km"),
         )
         .filter(
             Donation.status == DonationStatus.AVAILABLE,
@@ -133,26 +121,40 @@ async def get_nearby_donations(
             func.ST_DWithin(
                 cast(Donation.pickup_location, Geography),
                 cast(ngo_point, Geography),
-                radius_km * 1000.0
-            )
+                radius_km * 1000.0,
+            ),
         )
     )
 
     if food_type:
-        query = query.filter(
-            Donation.food_type == food_type
-        )
+        query = query.filter(Donation.food_type == food_type)
 
     results = query.order_by("distance_km").all()
 
-    # ---------------------------------------------------------
-    # 4. Build response output
-    # ---------------------------------------------------------
-
+    # 4. Build response output, including media URLs
     output = []
 
     for donation, dist_km in results:
         point = to_shape(donation.pickup_location)
+
+        # Parse stored media URLs safely.
+        media = []
+        stored_media = getattr(donation, "media_urls", None)
+
+        if stored_media:
+            if isinstance(stored_media, list):
+                media = stored_media
+            else:
+                try:
+                    parsed_media = json.loads(stored_media)
+
+                    if isinstance(parsed_media, list):
+                        media = parsed_media
+                    elif isinstance(parsed_media, str):
+                        media = [parsed_media]
+                except (json.JSONDecodeError, TypeError):
+                    # Support a single URL stored as plain text.
+                    media = [stored_media]
 
         output.append(
             {
@@ -167,31 +169,26 @@ async def get_nearby_donations(
                 "latitude": point.y,
                 "longitude": point.x,
                 "distance_km": round(float(dist_km), 2),
-                "expires_at": donation.expires_at.isoformat(),
                 "status": donation.status.value,
-                "created_at": donation.created_at.isoformat()
+                "expires_at": donation.expires_at.isoformat(),
+                "created_at": donation.created_at.isoformat(),
+                "media_urls": media,
             }
         )
 
-    # ---------------------------------------------------------
     # 5. Store result in Redis for 60 seconds
-    # ---------------------------------------------------------
-
     if redis:
         try:
             await redis.setex(
                 cache_key,
                 60,
-                json.dumps(output)
+                json.dumps(output),
             )
         except Exception:
             # Redis failure should not break the main API.
             pass
 
-    # ---------------------------------------------------------
-    # 6. Mark response as Cache MISS
-    # ---------------------------------------------------------
-
+    # 6. Mark response as cache MISS
     response.headers["X-Cache"] = "MISS"
 
     return output
@@ -201,16 +198,14 @@ async def get_nearby_donations(
     "/donations/{id}/request",
     response_model=DonationClaimResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Claim/Request Food Donation"
+    summary="Claim/Request Food Donation",
 )
 async def request_donation(
     id: uuid.UUID,
     data: DonationClaimRequest,
     db: Session = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
-    current_user: User = Depends(
-        RoleChecker([UserRole.NGO])
-    )
+    current_user: User = Depends(RoleChecker([UserRole.NGO])),
 ):
     """
     Allows a verified NGO to place a request for an available
@@ -219,26 +214,20 @@ async def request_donation(
     Transitions donation status to ACCEPTED and automatically
     dispatches a delivery task to the driver queue.
 
-    Also invalidates nearby Redis caches so that NGOs don't
-    receive stale information about already-claimed food.
+    Also invalidates nearby Redis caches so NGOs don't receive
+    stale information about already-claimed food.
     """
 
-    # ---------------------------------------------------------
     # 1. Get NGO profile
-    # ---------------------------------------------------------
-
     ngo_profile = current_user.ngo_profile
 
     if not ngo_profile:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="NGO profile not found"
+            detail="NGO profile not found",
         )
 
-    # ---------------------------------------------------------
     # 2. Find donation
-    # ---------------------------------------------------------
-
     donation = (
         db.query(Donation)
         .filter(Donation.id == id)
@@ -248,90 +237,63 @@ async def request_donation(
     if not donation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation not found"
+            detail="Donation not found",
         )
 
-    # ---------------------------------------------------------
     # 3. Check donation availability
-    # ---------------------------------------------------------
-
     if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f"This food is no longer available. "
                 f"Current status: {donation.status.value}"
-            )
+            ),
         )
 
-    # ---------------------------------------------------------
     # 4. Check expiration
-    # ---------------------------------------------------------
-
     if donation.expires_at < datetime.now(timezone.utc):
         donation.status = DonationStatus.EXPIRED
-
         db.commit()
 
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This donation has expired"
+            detail="This donation has expired",
         )
 
-    # ---------------------------------------------------------
     # 5. Create the request claim
-    # ---------------------------------------------------------
-
     claim = DonationRequest(
         donation_id=donation.id,
         ngo_id=ngo_profile.id,
         servings_requested=min(
             data.servings_requested,
-            donation.servings
+            donation.servings,
         ),
         status=RequestStatus.APPROVED,
-        notes=data.notes
+        notes=data.notes,
     )
 
-    # ---------------------------------------------------------
     # 6. Mark donation as accepted
-    # ---------------------------------------------------------
-
     donation.status = DonationStatus.ACCEPTED
-
     db.add(claim)
 
-    # ---------------------------------------------------------
     # 7. Generate claim ID
-    # ---------------------------------------------------------
-
     db.flush()
 
-    # ---------------------------------------------------------
     # 8. Automatically dispatch to delivery queue
-    # ---------------------------------------------------------
-
     new_delivery = Delivery(
         donation_id=donation.id,
         request_id=claim.id,
         ngo_id=ngo_profile.id,
-        status=DeliveryStatus.ASSIGNMENT_PENDING
+        status=DeliveryStatus.ASSIGNMENT_PENDING,
     )
 
     db.add(new_delivery)
 
-    # ---------------------------------------------------------
-    # 9. Save claim + delivery
-    # ---------------------------------------------------------
-
+    # 9. Save claim and delivery
     db.commit()
-
     db.refresh(claim)
 
-    # ---------------------------------------------------------
     # 10. Invalidate nearby search caches
-    # ---------------------------------------------------------
-
     if redis:
         try:
             keys = await redis.keys("cache:nearby:*")
@@ -349,16 +311,14 @@ async def request_donation(
 @router.get(
     "/claims/my",
     response_model=List[MyClaimWithDonationResponse],
-    summary="List My Claimed Donations"
+    summary="List My Claimed Donations",
 )
 def list_my_claims(
     db: Session = Depends(get_db),
-    current_user: User = Depends(
-        RoleChecker([UserRole.NGO])
-    )
+    current_user: User = Depends(RoleChecker([UserRole.NGO])),
 ):
     """
-    Returns all food donation claims placed by this NGO
+    Returns all food donation claims placed by this NGO,
     along with their active delivery ID.
     """
 
@@ -369,41 +329,35 @@ def list_my_claims(
 
     claims = (
         db.query(DonationRequest)
-        .filter(
-            DonationRequest.ngo_id == ngo_profile.id
-        )
-        .order_by(
-            DonationRequest.created_at.desc()
-        )
+        .filter(DonationRequest.ngo_id == ngo_profile.id)
+        .order_by(DonationRequest.created_at.desc())
         .all()
     )
 
     output = []
 
-    for c in claims:
-        # Find the delivery attached to this claim
+    for claim in claims:
+        # Find the delivery attached to this claim.
         delivery = (
             db.query(Delivery)
-            .filter(
-                Delivery.request_id == c.id
-            )
+            .filter(Delivery.request_id == claim.id)
             .first()
         )
 
         output.append(
             MyClaimWithDonationResponse(
-                claim_id=c.id,
-                donation_id=c.donation.id,
+                claim_id=claim.id,
+                donation_id=claim.donation.id,
                 delivery_id=delivery.id if delivery else None,
-                title=c.donation.title,
-                food_type=c.donation.food_type,
-                servings=c.donation.servings,
-                servings_requested=c.servings_requested,
-                pickup_address=c.donation.pickup_address,
-                claim_status=c.status,
-                donation_status=c.donation.status,
-                expires_at=c.donation.expires_at,
-                created_at=c.created_at
+                title=claim.donation.title,
+                food_type=claim.donation.food_type,
+                servings=claim.donation.servings,
+                servings_requested=claim.servings_requested,
+                pickup_address=claim.donation.pickup_address,
+                claim_status=claim.status,
+                donation_status=claim.donation.status,
+                expires_at=claim.donation.expires_at,
+                created_at=claim.created_at,
             )
         )
 
