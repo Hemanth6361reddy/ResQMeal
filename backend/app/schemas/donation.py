@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from typing import List, Optional
 import uuid
@@ -53,12 +52,17 @@ class DonationCreateRequest(BaseModel):
 
 
 class DonationUpdateRequest(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, min_length=3, max_length=200)
+    food_type: Optional[str] = None
     description: Optional[str] = None
     servings: Optional[int] = Field(None, gt=0)
     quantity_kg: Optional[float] = Field(None, gt=0)
-    pickup_address: Optional[str] = None
+    pickup_address: Optional[str] = Field(None, min_length=5)
+    latitude: Optional[float] = Field(None, ge=-90.0, le=90.0)
+    longitude: Optional[float] = Field(None, ge=-180.0, le=180.0)
     expires_at: Optional[datetime] = None
+    image_url: Optional[str] = None
+    media_urls: Optional[List[str]] = None
 
 
 class DonationResponse(BaseModel):
@@ -81,4 +85,3 @@ class DonationResponse(BaseModel):
 
     class Config:
         from_attributes = True
-

@@ -286,10 +286,11 @@ def get_donation(
     response_model=DonationResponse,
     summary="Edit Donation Details",
 )
-def update_donation(
+async def update_donation(
     id: uuid.UUID,
     data: DonationUpdateRequest,
     db: Session = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
     current_user: User = Depends(
         RoleChecker([UserRole.DONOR])
     ),
@@ -314,22 +315,78 @@ def update_donation(
             detail="You can only edit your own donations.",
         )
 
-    if donation.status not in (
-        DonationStatus.AVAILABLE,
-        DonationStatus.REQUESTED,
-    ):
+    # Strictly enforce that only PUBLISHED / AVAILABLE donations can be edited
+    if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This donation can no longer be edited.",
+            detail="This donation can no longer be edited because it has already been claimed.",
         )
 
-    for field, value in data.model_dump(
-        exclude_unset=True
-    ).items():
-        setattr(donation, field, value)
+    # Check if an NGO has an active claim or request on this food
+    active_claim = (
+        db.query(DonationRequest.id)
+        .filter(
+            DonationRequest.donation_id == donation.id,
+            DonationRequest.status.in_(
+                [
+                    RequestStatus.PENDING,
+                    RequestStatus.APPROVED,
+                ]
+            ),
+        )
+        .first()
+    )
+
+    if active_claim:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This donation can no longer be edited because it has already been claimed.",
+        )
+
+    # Update basic fields if provided
+    if data.title is not None:
+        donation.title = data.title
+    if data.food_type is not None:
+        donation.food_type = data.food_type
+    if data.description is not None:
+        donation.description = data.description
+    if data.servings is not None:
+        donation.servings = data.servings
+    if data.quantity_kg is not None:
+        donation.quantity_kg = data.quantity_kg
+    if data.pickup_address is not None:
+        donation.pickup_address = data.pickup_address
+    if data.expires_at is not None:
+        donation.expires_at = data.expires_at
+    if data.image_url is not None:
+        donation.image_url = data.image_url
+
+    # Update coordinates / PostGIS geometry if provided
+    if data.latitude is not None and data.longitude is not None:
+        donation.pickup_location = WKTElement(
+            f"POINT({data.longitude} {data.latitude})",
+            srid=4326,
+        )
+
+    # Update media URLs if provided
+    if data.media_urls is not None:
+        donation.media_urls = json.dumps(data.media_urls) if data.media_urls else None
+
+    # Update updatedAt timestamp while preserving created_at
+    donation.updated_at = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(donation)
+
+    # Invalidate Redis cache so NGOs see updated data immediately
+    if redis:
+        try:
+            async for key in redis.scan_iter(
+                match="cache:nearby:*"
+            ):
+                await redis.delete(key)
+        except Exception as exc:
+            print(f"Redis invalidation failed: {exc}")
 
     return serialize_donation(donation)
 
@@ -478,8 +535,6 @@ async def upload_donation_media(
     max_size = MAX_IMAGE_SIZE if is_image else MAX_VIDEO_SIZE
 
     try:
-        # Read at most one byte beyond the limit to detect
-        # oversized uploads without loading an unlimited file.
         content = await file.read(max_size + 1)
 
         if len(content) > max_size:
@@ -500,12 +555,9 @@ async def upload_donation_media(
                 detail="The uploaded file is empty.",
             )
 
-        # Use an extension determined by the accepted MIME type,
-        # not the untrusted filename supplied by the client.
         extension = MIME_EXTENSIONS[content_type]
         unique_filename = f"food_{uuid.uuid4().hex}{extension}"
 
-        # Use the same standardized directory as main.py.
         os.makedirs(UPLOAD_DIR, exist_ok=True)
 
         file_path = os.path.join(
@@ -516,7 +568,6 @@ async def upload_donation_media(
         with open(file_path, "xb") as uploaded_file:
             uploaded_file.write(content)
 
-        # Build the public URL from the current request host.
         media_url = str(
             request.base_url
         ).rstrip("/") + f"/uploads/{unique_filename}"

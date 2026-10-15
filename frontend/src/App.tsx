@@ -37,11 +37,11 @@ export default function App() {
             <Route path="forgotpassword" element={<ForgotPasswordPage />} />
             <Route path="forget-password" element={<ForgotPasswordPage />} />
             <Route path="forgetpassword" element={<ForgotPasswordPage />} />
-            <Route path="forgetpassword" element={<ForgotPasswordPage />} />
 
             {/* Donor Portal Routes */}
             <Route path="donor/dashboard" element={<DonorDashboardPage />} />
             <Route path="donor/create" element={<CreateDonationPage />} />
+            <Route path="donor/edit/:id" element={<CreateDonationPage />} />
 
             {/* NGO Portal Routes */}
             <Route path="ngo/dashboard" element={<NGODashboardPage />} />

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
+import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -18,6 +18,8 @@ import {
   Video,
   X,
   Maximize2,
+  ChevronLeft,
+  ChevronRight,
   RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -61,7 +63,13 @@ interface MyClaim {
   expires_at: string;
 }
 
-// Resilient Error Boundary to prevent any blank screen crash
+interface LightboxState {
+  urls: string[];
+  index: number;
+  title: string;
+}
+
+// Error Boundary to prevent any blank screen
 interface ErrorBoundaryProps {
   children: ReactNode;
 }
@@ -106,6 +114,113 @@ class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundary
   }
 }
 
+// Interactive Multi-Media Card Carousel
+function DonationCardMedia({
+  urls,
+  title,
+  onOpenLightbox,
+}: {
+  urls: string[];
+  title: string;
+  onOpenLightbox: (index: number) => void;
+}) {
+  const [currentIndex, setCurrentIndex] = useState(0);
+
+  if (!urls || urls.length === 0) return null;
+
+  const currentUrl = urls[currentIndex] || urls[0];
+  const isVideo = isVideoMedia(currentUrl);
+
+  const handlePrev = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCurrentIndex((prev) => (prev > 0 ? prev - 1 : urls.length - 1));
+  };
+
+  const handleNext = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCurrentIndex((prev) => (prev < urls.length - 1 ? prev + 1 : 0));
+  };
+
+  return (
+    <div
+      onClick={() => onOpenLightbox(currentIndex)}
+      className="w-full h-48 overflow-hidden bg-black/60 border-b border-border relative group cursor-pointer select-none"
+      title="Click to view full size gallery"
+    >
+      {isVideo ? (
+        <div className="relative w-full h-full flex items-center justify-center bg-black">
+          <video
+            src={currentUrl}
+            className="w-full h-full object-cover"
+            muted
+            autoPlay
+            loop
+            playsInline
+          />
+          <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 text-white backdrop-blur">
+            <Video className="h-3.5 w-3.5" />
+          </div>
+        </div>
+      ) : (
+        <img
+          src={currentUrl}
+          alt={`${title} - photo ${currentIndex + 1}`}
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+        />
+      )}
+
+      {/* Hover Overlay */}
+      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold backdrop-blur-[2px] pointer-events-none">
+        <Maximize2 className="h-4 w-4" />
+        <span>Click to view gallery ({urls.length} media)</span>
+      </div>
+
+      {urls.length > 1 && (
+        <>
+          <button
+            type="button"
+            onClick={handlePrev}
+            className="absolute left-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/75 text-white hover:bg-black hover:scale-110 transition-all opacity-0 group-hover:opacity-100 z-10 shadow-lg"
+            title="Previous media"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleNext}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-black/75 text-white hover:bg-black hover:scale-110 transition-all opacity-0 group-hover:opacity-100 z-10 shadow-lg"
+            title="Next media"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+
+          <span className="absolute bottom-2 right-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-black/80 text-white backdrop-blur z-10">
+            {currentIndex + 1} / {urls.length}
+          </span>
+
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 z-10">
+            {urls.map((_, idx) => (
+              <span
+                key={idx}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentIndex(idx);
+                }}
+                className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                  idx === currentIndex
+                    ? "w-4 bg-primary"
+                    : "w-1.5 bg-white/60 hover:bg-white"
+                }`}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function NGODashboardContent() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -120,17 +235,32 @@ function NGODashboardContent() {
   const [servingsToClaim, setServingsToClaim] = useState(20);
   const [notes, setNotes] = useState("");
 
-  // Fullscreen Lightbox Modal state
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // Fullscreen Interactive Lightbox Gallery state
+  const [lightbox, setLightbox] = useState<LightboxState | null>(null);
 
-  // Close lightbox on Escape key
+  // Keyboard navigation for Lightbox
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLightboxUrl(null);
+      if (!lightbox) return;
+      if (e.key === "Escape") {
+        setLightbox(null);
+      } else if (e.key === "ArrowLeft") {
+        setLightbox((prev) =>
+          prev
+            ? { ...prev, index: prev.index > 0 ? prev.index - 1 : prev.urls.length - 1 }
+            : null
+        );
+      } else if (e.key === "ArrowRight") {
+        setLightbox((prev) =>
+          prev
+            ? { ...prev, index: prev.index < prev.urls.length - 1 ? prev.index + 1 : 0 }
+            : null
+        );
+      }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [lightbox]);
 
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
@@ -140,7 +270,6 @@ function NGODashboardContent() {
 
   const [coords] = useState({ lat: 12.9716, lng: 77.5946 });
 
-  // Safe time formatter that never throws Invalid Date
   const formatTime = (isoString?: string) => {
     if (!isoString) return "N/A";
     try {
@@ -225,7 +354,7 @@ function NGODashboardContent() {
       });
     } catch (err: any) {
       console.error("Mapbox init failed:", err);
-      setMapError("Interactive map could not load (WebGL may be disabled). Food cards below remain fully usable.");
+      setMapError("Interactive map could not load. Food cards below remain fully usable.");
     }
 
     return () => {
@@ -243,7 +372,6 @@ function NGODashboardContent() {
   useEffect(() => {
     if (!mapLoaded || !map.current || activeTab !== "nearby") return;
 
-    // Remove old markers safely
     markers.current.forEach((m) => {
       try { m.remove(); } catch (e) {}
     });
@@ -301,7 +429,6 @@ function NGODashboardContent() {
     navigate("/login");
   };
 
-  // Check Authentication
   if (!token) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
@@ -315,7 +442,6 @@ function NGODashboardContent() {
     );
   }
 
-  // Check Role mismatch
   if (userRole && userRole !== "NGO") {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
@@ -345,30 +471,130 @@ function NGODashboardContent() {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-      {/* FULLSCREEN LIGHTBOX MODAL */}
+      {/* FULLSCREEN LIGHTBOX GALLERY MODAL */}
       <AnimatePresence>
-        {lightboxUrl && (
+        {lightbox && (
           <div
-            onClick={() => setLightboxUrl(null)}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md cursor-zoom-out"
+            onClick={() => setLightbox(null)}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md cursor-zoom-out"
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
+              initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
+              exit={{ opacity: 0, scale: 0.95 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative max-w-4xl max-h-[85vh] rounded-2xl overflow-hidden shadow-2xl bg-black border border-white/20 flex items-center justify-center"
+              className="relative w-full max-w-5xl max-h-[92vh] flex flex-col items-center justify-between rounded-2xl overflow-hidden bg-black/95 border border-white/15 p-4 shadow-2xl cursor-default"
             >
-              <button
-                onClick={() => setLightboxUrl(null)}
-                className="absolute top-3 right-3 z-10 p-2 rounded-full bg-black/70 text-white hover:bg-black/90 transition-all cursor-pointer shadow-lg"
-              >
-                <X className="h-5 w-5" />
-              </button>
-              {isVideoMedia(lightboxUrl) ? (
-                <video src={lightboxUrl} controls autoPlay playsInline className="max-w-full max-h-[80vh] object-contain" />
-              ) : (
-                <img src={lightboxUrl} alt="Full view" className="max-w-full max-h-[80vh] object-contain" />
+              <div className="w-full flex items-center justify-between pb-3 border-b border-white/10 text-white z-20">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm truncate max-w-md">{lightbox.title}</span>
+                  {lightbox.urls.length > 1 && (
+                    <span className="text-xs text-muted-foreground px-2 py-0.5 rounded-full bg-white/10">
+                      {lightbox.index + 1} of {lightbox.urls.length}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setLightbox(null)}
+                  className="p-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer"
+                  title="Close (Esc)"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="relative w-full flex-1 flex items-center justify-center my-3 min-h-[300px] max-h-[65vh] overflow-hidden">
+                {lightbox.urls.length > 1 && (
+                  <button
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index: prev.index > 0 ? prev.index - 1 : prev.urls.length - 1,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute left-2 z-20 p-2.5 rounded-full bg-black/70 hover:bg-black text-white hover:scale-110 transition-all border border-white/20 cursor-pointer shadow-xl"
+                    title="Previous (Left Arrow)"
+                  >
+                    <ChevronLeft className="h-6 w-6" />
+                  </button>
+                )}
+
+                {isVideoMedia(lightbox.urls[lightbox.index]) ? (
+                  <video
+                    key={lightbox.urls[lightbox.index]}
+                    src={lightbox.urls[lightbox.index]}
+                    controls
+                    autoPlay
+                    playsInline
+                    className="max-w-full max-h-[60vh] object-contain rounded-xl shadow-lg"
+                  />
+                ) : (
+                  <img
+                    key={lightbox.urls[lightbox.index]}
+                    src={lightbox.urls[lightbox.index]}
+                    alt={`${lightbox.title} - ${lightbox.index + 1}`}
+                    className="max-w-full max-h-[60vh] object-contain rounded-xl shadow-lg"
+                  />
+                )}
+
+                {lightbox.urls.length > 1 && (
+                  <button
+                    onClick={() =>
+                      setLightbox((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              index: prev.index < prev.urls.length - 1 ? prev.index + 1 : 0,
+                            }
+                          : null
+                      )
+                    }
+                    className="absolute right-2 z-20 p-2.5 rounded-full bg-black/70 hover:bg-black text-white hover:scale-110 transition-all border border-white/20 cursor-pointer shadow-xl"
+                    title="Next (Right Arrow)"
+                  >
+                    <ChevronRight className="h-6 w-6" />
+                  </button>
+                )}
+              </div>
+
+              {lightbox.urls.length > 1 && (
+                <div className="w-full flex items-center justify-center gap-2 pt-2 border-t border-white/10 overflow-x-auto py-1">
+                  {lightbox.urls.map((url, idx) => {
+                    const isVid = isVideoMedia(url);
+                    const isActive = idx === lightbox.index;
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() =>
+                          setLightbox((prev) => (prev ? { ...prev, index: idx } : null))
+                        }
+                        className={`relative h-14 w-14 rounded-lg overflow-hidden border-2 transition-all shrink-0 cursor-pointer ${
+                          isActive
+                            ? "border-primary scale-105 shadow-md shadow-primary/30"
+                            : "border-white/20 opacity-60 hover:opacity-100"
+                        }`}
+                      >
+                        {isVid ? (
+                          <div className="w-full h-full bg-black flex items-center justify-center text-white">
+                            <Video className="h-4 w-4" />
+                          </div>
+                        ) : (
+                          <img src={url} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
+                        )}
+                        {isVid && (
+                          <span className="absolute bottom-0.5 right-0.5 p-0.5 rounded bg-black/80 text-[8px] font-bold text-white">
+                            VID
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </motion.div>
           </div>
@@ -471,7 +697,7 @@ function NGODashboardContent() {
             )}
           </div>
 
-          {/* LISTINGS GRID WITH CLICKABLE FOOD PHOTOS */}
+          {/* LISTINGS GRID WITH MULTI-MEDIA CAROUSEL CARDS */}
           <div>
             <h3 className="text-sm font-bold uppercase tracking-wider text-muted-foreground mb-4">
               Available Donation Cards
@@ -497,46 +723,17 @@ function NGODashboardContent() {
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {donationsList.map((d) => {
                   const urls = parseMediaUrls(d.media_urls);
-                  const firstMedia = urls[0];
-                  const isVideo = isVideoMedia(firstMedia);
 
                   return (
                     <Card key={d.id} className="flex flex-col justify-between hover:border-primary/50 transition-all overflow-hidden shadow-md">
-                      {/* Clickable Food Photo Banner */}
-                      {firstMedia && (
-                        <div
-                          onClick={() => setLightboxUrl(firstMedia)}
-                          className="w-full h-44 overflow-hidden bg-black/50 border-b border-border relative group cursor-pointer"
-                          title="Click to view full size"
-                        >
-                          {isVideo ? (
-                            <div className="relative w-full h-full flex items-center justify-center bg-black">
-                              <video src={firstMedia} className="w-full h-full object-cover" muted autoPlay loop playsInline />
-                              <div className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 text-white backdrop-blur">
-                                <Video className="h-3.5 w-3.5" />
-                              </div>
-                            </div>
-                          ) : (
-                            <img
-                              src={firstMedia}
-                              alt={d.title}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            />
-                          )}
-
-                          {/* Hover Overlay */}
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold backdrop-blur-[2px]">
-                            <Maximize2 className="h-4 w-4" />
-                            <span>Click to expand</span>
-                          </div>
-
-                          {urls.length > 1 && (
-                            <span className="absolute bottom-2 right-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-black/80 text-white backdrop-blur z-10">
-                              +{urls.length - 1} more
-                            </span>
-                          )}
-                        </div>
-                      )}
+                      {/* Interactive Multi-Media Carousel Header */}
+                      <DonationCardMedia
+                        urls={urls}
+                        title={d.title}
+                        onOpenLightbox={(idx) =>
+                          setLightbox({ urls, index: idx, title: d.title })
+                        }
+                      />
 
                       <CardHeader>
                         <div className="flex justify-between items-start mb-2">
@@ -653,9 +850,9 @@ function NGODashboardContent() {
             {/* Show photo preview inside claim modal */}
             {modalMedia && (
               <div
-                onClick={() => setLightboxUrl(modalMedia)}
+                onClick={() => setLightbox({ urls: modalUrls, index: 0, title: selectedDonation.title })}
                 className="w-full h-36 bg-black overflow-hidden border-b border-border cursor-pointer relative group"
-                title="Click to view full size"
+                title="Click to view full size gallery"
               >
                 {isModalVideo ? (
                   <video src={modalMedia} className="w-full h-full object-cover" muted autoPlay loop playsInline />
@@ -664,7 +861,7 @@ function NGODashboardContent() {
                 )}
                 <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs gap-1 font-semibold">
                   <Maximize2 className="h-3.5 w-3.5" />
-                  <span>Click to expand</span>
+                  <span>Click to expand ({modalUrls.length} media)</span>
                 </div>
               </div>
             )}

@@ -1,6 +1,6 @@
-import { useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useState, useRef, useEffect, Component, ErrorInfo, ReactNode } from "react";
+import { useNavigate, useLocation, useParams, useSearchParams, Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   Utensils, 
@@ -13,14 +13,16 @@ import {
   Camera, 
   Video, 
   X, 
-  Image as ImageIcon, 
   AlertCircle, 
-  CheckCircle2 
+  CheckCircle2,
+  RefreshCw,
+  Save,
+  Pencil
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { LocationPickerMap } from "@/components/maps/LocationPickerMap";
-import { apiFetch, getAuthToken, resolveMediaUrl } from "@/lib/api";
+import { apiFetch, getAuthToken, resolveMediaUrl, parseMediaUrls, isVideoMedia } from "@/lib/api";
 
 interface UploadedMediaItem {
   id: string;
@@ -29,15 +31,72 @@ interface UploadedMediaItem {
   filename: string;
 }
 
-export function CreateDonationPage() {
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class CreateDonationErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("CreateDonationPage crash caught:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
+          <div className="p-4 rounded-2xl bg-destructive/15 border border-destructive/30 text-destructive mb-4">
+            <AlertCircle className="h-10 w-10 mx-auto" />
+          </div>
+          <h2 className="text-2xl font-bold">Failed to load Form</h2>
+          <p className="text-muted-foreground mt-2 mb-6 max-w-md text-sm">
+            {this.state.error?.message || "An unexpected error occurred while loading this form."}
+          </p>
+          <div className="flex gap-3">
+            <Button onClick={() => window.location.reload()} className="gap-2">
+              <RefreshCw className="h-4 w-4" />
+              <span>Reload Page</span>
+            </Button>
+            <Link to="/donor/dashboard">
+              <Button variant="outline">Back to Dashboard</Button>
+            </Link>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function CreateDonationContent() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { id: routeId } = useParams<{ id?: string }>();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const token = getAuthToken();
+
+  // Determine if in Edit Mode
+  const editId = routeId || searchParams.get("edit");
+  const isEditing = Boolean(editId);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -55,7 +114,73 @@ export function CreateDonationPage() {
   // Uploaded Media URLs array
   const [mediaItems, setMediaItems] = useState<UploadedMediaItem[]>([]);
 
-  // 1. Upload File Handler
+  // If passed through React Router state, use it for immediate pre-fill
+  const stateDonation = (location.state as any)?.donation;
+
+  // Fallback query if user refreshed page directly on /donor/edit/:id
+  const { data: fetchedDonation, isLoading: loadingExisting } = useQuery<any>({
+    queryKey: ["donationDetail", editId],
+    queryFn: () => apiFetch(`/donations/${editId}`),
+    enabled: isEditing && !stateDonation && !!token,
+  });
+
+  const donationData = stateDonation || fetchedDonation;
+
+  // Pre-fill form when editing
+  useEffect(() => {
+    if (!isEditing || !donationData) return;
+
+    // Estimate remaining hours
+    let hours = 4;
+    if (donationData.expires_at) {
+      const diffMs = new Date(donationData.expires_at).getTime() - Date.now();
+      const diffHrs = Math.round(diffMs / (1000 * 60 * 60));
+      if (diffHrs > 0) hours = diffHrs;
+    }
+
+    setFormData({
+      title: donationData.title || "",
+      food_type: donationData.food_type || "Cooked Meals",
+      description: donationData.description || "",
+      quantity_kg: donationData.quantity_kg ?? 10,
+      servings: donationData.servings ?? 25,
+      pickup_address: donationData.pickup_address || "",
+      latitude: donationData.latitude ?? 12.9716,
+      longitude: donationData.longitude ?? 77.5946,
+      hours_until_expiry: hours,
+    });
+
+    // Pre-fill existing media items
+    const existingUrls = parseMediaUrls(donationData.media_urls);
+    if (existingUrls.length > 0) {
+      setMediaItems(
+        existingUrls.map((url, idx) => ({
+          id: `existing-${idx}-${Date.now()}`,
+          url,
+          media_type: isVideoMedia(url) ? "video" : "image",
+          filename: url.split("/").pop() || `media-${idx + 1}`,
+        }))
+      );
+    }
+  }, [isEditing, donationData]);
+
+  // Auth Guard
+  if (!token) {
+    return (
+      <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
+        <AlertCircle className="h-12 w-12 text-primary mb-4" />
+        <h2 className="text-2xl font-bold">Authentication Required</h2>
+        <p className="text-muted-foreground mt-2 mb-6">
+          Please log in to publish or edit surplus food listings.
+        </p>
+        <Link to="/login">
+          <Button>Sign In</Button>
+        </Link>
+      </div>
+    );
+  }
+
+  // Upload File Handler
   const handleUploadFiles = async (files: FileList | File[]) => {
     setMediaError(null);
 
@@ -74,7 +199,6 @@ export function CreateDonationPage() {
     setUploading(true);
 
     for (const file of Array.from(files)) {
-      // Client-side quick size validation
       if (file.type.startsWith("image/") && file.size > 10 * 1024 * 1024) {
         setMediaError(`Image '${file.name}' exceeds 10MB limit.`);
         continue;
@@ -97,7 +221,7 @@ export function CreateDonationPage() {
         });
 
         if (!response.ok) {
-          const errData = await response.json();
+          const errData = await response.json().catch(() => ({}));
           throw new Error(errData.detail || "Failed to upload file.");
         }
 
@@ -120,56 +244,101 @@ export function CreateDonationPage() {
     setUploading(false);
   };
 
-  // Remove a media item
   const handleRemoveMedia = (index: number) => {
     setMediaItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // 2. Submit Mutation
+  // Submit Mutation (Create or Update)
   const mutation = useMutation({
     mutationFn: async () => {
       const expiresAt = new Date();
       expiresAt.setHours(expiresAt.getHours() + Number(formData.hours_until_expiry));
 
-      return apiFetch("/donations", {
-        method: "POST",
-        body: JSON.stringify({
-          title: formData.title,
-          food_type: formData.food_type,
-          description: formData.description,
-          quantity_kg: Number(formData.quantity_kg),
-          servings: Number(formData.servings),
-          pickup_address: formData.pickup_address,
-          latitude: Number(formData.latitude),
-          longitude: Number(formData.longitude),
-          expires_at: expiresAt.toISOString(),
-          media_urls: mediaItems.map((m) => m.url),
-        }),
-      });
+      const payload = {
+        title: formData.title,
+        food_type: formData.food_type,
+        description: formData.description,
+        quantity_kg: Number(formData.quantity_kg),
+        servings: Number(formData.servings),
+        pickup_address: formData.pickup_address,
+        latitude: Number(formData.latitude),
+        longitude: Number(formData.longitude),
+        expires_at: expiresAt.toISOString(),
+        media_urls: mediaItems.map((m) => m.url),
+      };
+
+      if (isEditing) {
+        return apiFetch(`/donations/${editId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+      } else {
+        return apiFetch("/donations", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+      }
     },
     onSuccess: () => {
+      setSuccessToast(isEditing ? "Donation updated successfully" : "Donation published successfully");
       queryClient.invalidateQueries({ queryKey: ["myDonations"] });
       queryClient.invalidateQueries({ queryKey: ["nearbyDonations"] });
-      navigate("/donor/dashboard");
+
+      setTimeout(() => {
+        navigate("/donor/dashboard");
+      }, 1200);
     },
   });
 
+  if (isEditing && loadingExisting && !donationData) {
+    return (
+      <div className="min-h-[60vh] flex flex-col items-center justify-center py-20">
+        <Loader2 className="h-10 w-10 animate-spin text-primary mb-3" />
+        <p className="text-sm text-muted-foreground font-semibold">Loading food listing for edit...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
-      <Button variant="ghost" size="sm" onClick={() => navigate("/donor/dashboard")} className="gap-2 mb-6">
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {successToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-5 right-5 z-50 p-4 rounded-xl bg-emerald-500 text-black font-bold flex items-center gap-2 shadow-2xl border border-white/20"
+          >
+            <CheckCircle2 className="h-5 w-5" />
+            <span>{successToast}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => navigate("/donor/dashboard")}
+        className="gap-2 mb-6"
+      >
         <ArrowLeft className="h-4 w-4" />
         Back to Dashboard
       </Button>
 
-      <Card className="border-border shadow-xl">
+      <Card className="border-border shadow-xl overflow-hidden">
         <CardHeader>
           <div className="flex items-center gap-2 text-primary text-sm font-semibold">
-            <Sparkles className="h-4 w-4" />
-            <span>New Food Listing</span>
+            {isEditing ? <Pencil className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+            <span>{isEditing ? "Edit Food Listing" : "New Food Listing"}</span>
           </div>
-          <CardTitle className="text-2xl font-bold">List Surplus Food for Rescue</CardTitle>
+          <CardTitle className="text-2xl font-bold">
+            {isEditing ? "Edit Food Listing" : "List Surplus Food for Rescue"}
+          </CardTitle>
           <CardDescription>
-            Shelters and verified NGOs will be alerted based on geographic proximity.
+            {isEditing
+              ? "Update food details, portions, pickup deadline, or photos before an NGO claims it."
+              : "Shelters and verified NGOs will be alerted based on geographic proximity."}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -180,10 +349,16 @@ export function CreateDonationPage() {
             }}
             className="space-y-6"
           >
+            {/* Error Banner */}
             {mutation.isError && (
-              <div className="p-3 text-xs rounded-lg bg-destructive/15 border border-destructive/30 text-destructive">
-                {(mutation.error as any).message || "Failed to create donation"}
-              </div>
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-3.5 text-xs rounded-xl bg-destructive/15 border border-destructive/30 text-destructive flex items-center gap-2.5 font-medium leading-relaxed"
+              >
+                <AlertCircle className="h-5 w-5 shrink-0 text-destructive" />
+                <span>{(mutation.error as any).message || "Failed to save donation"}</span>
+              </motion.div>
             )}
 
             {/* Food Title */}
@@ -241,7 +416,7 @@ export function CreateDonationPage() {
               </div>
             </div>
 
-            {/* NEW SECTION: FOOD PHOTOS / VIDEO UPLOAD */}
+            {/* FOOD PHOTOS / VIDEO UPLOAD */}
             <div className="space-y-3 pt-2 border-t border-border">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -334,12 +509,10 @@ export function CreateDonationPage() {
                           </div>
                         )}
 
-                        {/* Top Badge */}
                         <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white uppercase tracking-wider backdrop-blur">
                           {item.media_type}
                         </span>
 
-                        {/* Delete Button */}
                         <button
                           type="button"
                           onClick={(e) => {
@@ -386,28 +559,56 @@ export function CreateDonationPage() {
 
             {/* Map Location Picker */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span className="font-semibold uppercase tracking-wider">Pin Location on Map</span>
-                <span className="text-primary font-mono text-[11px]">
-                  {formData.latitude.toFixed(4)}, {formData.longitude.toFixed(4)}
-                </span>
-              </div>
               <LocationPickerMap
+                latitude={formData.latitude}
+                longitude={formData.longitude}
                 initialLat={formData.latitude}
                 initialLng={formData.longitude}
+                onLocationChange={(lat, lng) => {
+                  setFormData((prev) => ({ ...prev, latitude: lat, longitude: lng }));
+                }}
                 onLocationSelect={(lat, lng) => {
                   setFormData((prev) => ({ ...prev, latitude: lat, longitude: lng }));
                 }}
               />
             </div>
 
-            <Button type="submit" disabled={mutation.isPending} className="w-full gap-2 shadow-lg">
-              {mutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-              <span>Publish Donation Listing</span>
-            </Button>
+            {/* Action Buttons */}
+            <div className="flex items-center gap-3 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => navigate("/donor/dashboard")}
+                className="flex-1"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={mutation.isPending}
+                className="flex-1 gap-2 shadow-lg"
+              >
+                {mutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : isEditing ? (
+                  <Save className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                <span>{isEditing ? "Update Food Listing" : "Publish Donation Listing"}</span>
+              </Button>
+            </div>
           </form>
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+export function CreateDonationPage() {
+  return (
+    <CreateDonationErrorBoundary>
+      <CreateDonationContent />
+    </CreateDonationErrorBoundary>
   );
 }
