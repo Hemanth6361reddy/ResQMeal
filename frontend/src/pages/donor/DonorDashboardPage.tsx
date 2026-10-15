@@ -6,6 +6,7 @@ import {
   Plus,
   Utensils,
   Clock,
+  Calendar,
   MapPin,
   CheckCircle2,
   Loader2,
@@ -20,6 +21,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Pencil,
+  Bell,
+  Mail,
+  Phone,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -37,6 +41,8 @@ import {
   removeAuthToken,
   parseMediaUrls,
   isVideoMedia,
+  formatUploadedDateTime,
+  formatRelativeTime,
 } from "@/lib/api";
 
 interface Donation {
@@ -60,7 +66,26 @@ interface Donation {
     | "EXPIRED";
   expires_at: string;
   created_at: string;
+  updated_at?: string;
+  published_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  publishedAt?: string;
+  expiresAt?: string;
   media_urls?: string[] | string;
+}
+
+interface NotificationItem {
+  id: string;
+  donation_id?: string;
+  type: string;
+  title: string;
+  message: string;
+  channels: string;
+  recipient_email?: string;
+  recipient_phone?: string;
+  is_read: boolean;
+  created_at: string;
 }
 
 interface LightboxState {
@@ -130,7 +155,6 @@ function DonationCardMedia({
         <span>Click to view gallery ({urls.length} media)</span>
       </div>
 
-      {/* Multi-item Navigation Controls on Card */}
       {urls.length > 1 && (
         <>
           <button
@@ -151,12 +175,10 @@ function DonationCardMedia({
             <ChevronRight className="h-4 w-4" />
           </button>
 
-          {/* Counter Badge */}
           <span className="absolute bottom-2 right-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-black/80 text-white backdrop-blur z-10">
             {currentIndex + 1} / {urls.length}
           </span>
 
-          {/* Dots Indicator */}
           <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 z-10">
             {urls.map((_, idx) => (
               <span
@@ -191,10 +213,12 @@ export function DonorDashboardPage() {
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
 
-  // Fullscreen Interactive Lightbox Gallery state
+  // Notifications Drawer
+  const [showNotifications, setShowNotifications] = useState(false);
+
+  // Fullscreen Lightbox
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
 
-  // Keyboard Navigation for Lightbox (Left / Right / Escape)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!lightbox) return;
@@ -218,7 +242,6 @@ export function DonorDashboardPage() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [lightbox]);
 
-  // Show a warning popup when attempting to edit a claimed donation
   const triggerClaimedEditPopup = (id: string) => {
     setClaimedEditWarningId(id);
     setClaimedWarningId(null);
@@ -227,7 +250,6 @@ export function DonorDashboardPage() {
     }, 4000);
   };
 
-  // Show a warning popup when attempting to cancel a claimed donation
   const triggerClaimedPopup = (id: string) => {
     setClaimedWarningId(id);
     setClaimedEditWarningId(null);
@@ -236,7 +258,7 @@ export function DonorDashboardPage() {
     }, 4000);
   };
 
-  // 1. Fetch My Donations
+  // 1. Fetch My Donations (auto-refreshes every 10 seconds to catch expired listings)
   const {
     data: donations,
     isLoading,
@@ -245,9 +267,29 @@ export function DonorDashboardPage() {
     queryKey: ["myDonations"],
     queryFn: () => apiFetch("/donations/my"),
     enabled: !!token,
+    refetchInterval: 10000,
   });
 
-  // 2. Cancel Donation Mutation
+  // 2. Fetch Donor Notifications
+  const { data: notificationsList, refetch: refetchNotifications } = useQuery<NotificationItem[]>({
+    queryKey: ["myNotifications"],
+    queryFn: () => apiFetch("/notifications/my"),
+    enabled: !!token,
+    refetchInterval: 10000,
+  });
+
+  const unreadNotifications = (notificationsList || []).filter((n) => !n.is_read);
+
+  // 3. Mark notification as read
+  const markReadMutation = useMutation({
+    mutationFn: (notifId: string) =>
+      apiFetch(`/notifications/${notifId}/read`, { method: "PATCH" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["myNotifications"] });
+    },
+  });
+
+  // 4. Cancel Donation Mutation
   const cancelMutation = useMutation({
     mutationFn: (donationId: string) =>
       apiFetch(`/donations/${donationId}/cancel`, {
@@ -260,9 +302,7 @@ export function DonorDashboardPage() {
       setClaimedWarningId(null);
       setClaimedEditWarningId(null);
 
-      queryClient.invalidateQueries({
-        queryKey: ["myDonations"],
-      });
+      queryClient.invalidateQueries({ queryKey: ["myDonations"] });
 
       setTimeout(() => {
         setSuccessToast(null);
@@ -293,21 +333,13 @@ export function DonorDashboardPage() {
     );
   }
 
-  const activeListings =
-    (Array.isArray(donations) ? donations : []).filter((d) =>
-      [
-        "AVAILABLE",
-        "REQUESTED",
-        "ACCEPTED",
-        "PICKED_UP",
-        "ON_THE_WAY",
-      ].includes(d.status)
-    );
+  const activeListings = (Array.isArray(donations) ? donations : []).filter((d) =>
+    ["AVAILABLE", "REQUESTED", "ACCEPTED", "PICKED_UP", "ON_THE_WAY"].includes(d.status)
+  );
 
-  const historyListings =
-    (Array.isArray(donations) ? donations : []).filter((d) =>
-      ["DELIVERED", "CANCELLED", "EXPIRED"].includes(d.status)
-    );
+  const historyListings = (Array.isArray(donations) ? donations : []).filter((d) =>
+    ["DELIVERED", "CANCELLED", "EXPIRED"].includes(d.status)
+  );
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
@@ -326,6 +358,106 @@ export function DonorDashboardPage() {
         )}
       </AnimatePresence>
 
+      {/* Notifications Slide-Over Panel */}
+      <AnimatePresence>
+        {showNotifications && (
+          <div
+            onClick={() => setShowNotifications(false)}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex justify-end"
+          >
+            <motion.div
+              initial={{ x: 350, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: 350, opacity: 0 }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md h-full bg-card border-l border-border p-6 shadow-2xl flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between pb-4 border-b border-border">
+                  <div className="flex items-center gap-2">
+                    <Bell className="h-5 w-5 text-primary" />
+                    <h3 className="font-bold text-lg">Donor Alerts</h3>
+                    {unreadNotifications.length > 0 && (
+                      <Badge variant="destructive" className="text-xs">
+                        {unreadNotifications.length} New
+                      </Badge>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setShowNotifications(false)}
+                    className="p-1 rounded-full text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+
+                <div className="mt-4 space-y-3 overflow-y-auto max-h-[75vh] pr-1">
+                  {(!notificationsList || notificationsList.length === 0) ? (
+                    <div className="py-16 text-center text-muted-foreground text-sm">
+                      <Bell className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                      <p>No notifications yet.</p>
+                    </div>
+                  ) : (
+                    notificationsList.map((n) => (
+                      <div
+                        key={n.id}
+                        onClick={() => {
+                          if (!n.is_read) markReadMutation.mutate(n.id);
+                        }}
+                        className={`p-4 rounded-xl border text-xs space-y-2 transition-all cursor-pointer ${
+                          n.is_read
+                            ? "bg-secondary/30 border-border opacity-85"
+                            : "bg-destructive/10 border-destructive/40 shadow-sm"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-sm text-foreground flex items-center gap-1.5">
+                            <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
+                            {n.title}
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {formatRelativeTime(n.created_at)}
+                          </span>
+                        </div>
+
+                        <p className="text-foreground leading-relaxed">{n.message}</p>
+
+                        <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-border/40 text-[11px] text-muted-foreground">
+                          {n.recipient_email && (
+                            <span className="flex items-center gap-1 bg-secondary/80 px-2 py-0.5 rounded-md">
+                              <Mail className="h-3 w-3 text-primary" />
+                              <span>{n.recipient_email}</span>
+                            </span>
+                          )}
+                          {n.recipient_phone && (
+                            <span className="flex items-center gap-1 bg-secondary/80 px-2 py-0.5 rounded-md">
+                              <Phone className="h-3 w-3 text-primary" />
+                              <span>{n.recipient_phone}</span>
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-border">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowNotifications(false)}
+                  className="w-full text-xs"
+                >
+                  Close Notifications
+                </Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* FULLSCREEN LIGHTBOX GALLERY MODAL */}
       <AnimatePresence>
         {lightbox && (
@@ -340,7 +472,6 @@ export function DonorDashboardPage() {
               onClick={(e) => e.stopPropagation()}
               className="relative w-full max-w-5xl max-h-[92vh] flex flex-col items-center justify-between rounded-2xl overflow-hidden bg-black/95 border border-white/15 p-4 shadow-2xl cursor-default"
             >
-              {/* Header */}
               <div className="w-full flex items-center justify-between pb-3 border-b border-white/10 text-white z-20">
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-sm truncate max-w-md">{lightbox.title}</span>
@@ -359,9 +490,7 @@ export function DonorDashboardPage() {
                 </button>
               </div>
 
-              {/* Main Media Viewport */}
               <div className="relative w-full flex-1 flex items-center justify-center my-3 min-h-[300px] max-h-[65vh] overflow-hidden">
-                {/* Previous Button */}
                 {lightbox.urls.length > 1 && (
                   <button
                     onClick={() =>
@@ -375,13 +504,11 @@ export function DonorDashboardPage() {
                       )
                     }
                     className="absolute left-2 z-20 p-2.5 rounded-full bg-black/70 hover:bg-black text-white hover:scale-110 transition-all border border-white/20 cursor-pointer shadow-xl"
-                    title="Previous (Left Arrow)"
                   >
                     <ChevronLeft className="h-6 w-6" />
                   </button>
                 )}
 
-                {/* Media Element */}
                 {isVideoMedia(lightbox.urls[lightbox.index]) ? (
                   <video
                     key={lightbox.urls[lightbox.index]}
@@ -400,7 +527,6 @@ export function DonorDashboardPage() {
                   />
                 )}
 
-                {/* Next Button */}
                 {lightbox.urls.length > 1 && (
                   <button
                     onClick={() =>
@@ -414,14 +540,12 @@ export function DonorDashboardPage() {
                       )
                     }
                     className="absolute right-2 z-20 p-2.5 rounded-full bg-black/70 hover:bg-black text-white hover:scale-110 transition-all border border-white/20 cursor-pointer shadow-xl"
-                    title="Next (Right Arrow)"
                   >
                     <ChevronRight className="h-6 w-6" />
                   </button>
                 )}
               </div>
 
-              {/* Bottom Thumbnail Carousel Strip */}
               {lightbox.urls.length > 1 && (
                 <div className="w-full flex items-center justify-center gap-2 pt-2 border-t border-white/10 overflow-x-auto py-1">
                   {lightbox.urls.map((url, idx) => {
@@ -447,11 +571,6 @@ export function DonorDashboardPage() {
                         ) : (
                           <img src={url} alt={`thumb-${idx}`} className="w-full h-full object-cover" />
                         )}
-                        {isVid && (
-                          <span className="absolute bottom-0.5 right-0.5 p-0.5 rounded bg-black/80 text-[8px] font-bold text-white">
-                            VID
-                          </span>
-                        )}
                       </button>
                     );
                   })}
@@ -462,7 +581,7 @@ export function DonorDashboardPage() {
         )}
       </AnimatePresence>
 
-      {/* Header */}
+      {/* Header with Notifications Bell */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-6 border-b border-border">
         <div>
           <div className="flex items-center gap-2 text-primary text-xs font-semibold uppercase tracking-wider mb-1">
@@ -473,6 +592,20 @@ export function DonorDashboardPage() {
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Notification Center Trigger */}
+          <button
+            onClick={() => setShowNotifications(true)}
+            className="relative p-2.5 rounded-xl border border-border bg-card hover:bg-secondary text-foreground transition-all cursor-pointer shadow-sm"
+            title="View Notifications"
+          >
+            <Bell className="h-4 w-4" />
+            {unreadNotifications.length > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[9px] font-bold text-white shadow-md">
+                {unreadNotifications.length}
+              </span>
+            )}
+          </button>
+
           <Link to="/donor/create">
             <Button className="gap-2 shadow-lg">
               <Plus className="h-4 w-4" />
@@ -535,6 +668,7 @@ export function DonorDashboardPage() {
             <AnimatePresence>
               {activeListings.map((d) => {
                 const urls = parseMediaUrls(d.media_urls);
+                const uploadIso = d.created_at || d.createdAt || d.published_at || d.publishedAt;
 
                 return (
                   <motion.div
@@ -546,7 +680,6 @@ export function DonorDashboardPage() {
                     transition={{ duration: 0.25 }}
                   >
                     <Card className="flex flex-col justify-between h-full border-border hover:border-primary/50 transition-all shadow-md overflow-hidden">
-                      {/* Multi-Photo Carousel Card Header */}
                       <DonationCardMedia
                         urls={urls}
                         title={d.title}
@@ -584,17 +717,39 @@ export function DonorDashboardPage() {
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Clock className="h-3.5 w-3.5" />
-                            <span>Expires: {new Date(d.expires_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                          </span>
+                        {/* Timestamps Section */}
+                        <div className="space-y-1.5 pt-1 border-t border-border/50 text-xs">
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span className="flex items-center gap-1 font-medium text-foreground/80">
+                              <Calendar className="h-3.5 w-3.5 text-primary shrink-0" />
+                              <span>Uploaded:</span>
+                            </span>
+                            <div className="text-right">
+                              <span className="font-semibold text-foreground">
+                                {formatUploadedDateTime(uploadIso)}
+                              </span>
+                              {uploadIso && formatRelativeTime(uploadIso) && (
+                                <span className="text-[10px] text-muted-foreground ml-1.5 font-normal">
+                                  ({formatRelativeTime(uploadIso)})
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                              <span>Expires:</span>
+                            </span>
+                            <span className="font-medium text-foreground/90">
+                              {formatUploadedDateTime(d.expires_at || d.expiresAt)}
+                            </span>
+                          </div>
                         </div>
 
-                        {/* Card Action Buttons (Edit + Cancel Listing) */}
+                        {/* Action Buttons */}
                         <div className="relative pt-1 space-y-2">
                           <AnimatePresence>
-                            {/* Popup Warning for Edit (when claimed) */}
                             {claimedEditWarningId === d.id && (
                               <motion.div
                                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -612,12 +767,10 @@ export function DonorDashboardPage() {
                                     This donation can no longer be edited because it has already been claimed.
                                   </span>
                                 </div>
-                                {/* Pointer arrow pointing directly down to Edit button */}
                                 <div className="absolute -bottom-1.5 left-1/4 -translate-x-1/2 w-3 h-3 bg-card border-r border-b border-amber-500/50 rotate-45" />
                               </motion.div>
                             )}
 
-                            {/* Popup Warning for Cancel (when claimed) */}
                             {claimedWarningId === d.id && (
                               <motion.div
                                 initial={{ opacity: 0, y: 10, scale: 0.95 }}
@@ -635,14 +788,12 @@ export function DonorDashboardPage() {
                                     An NGO has already claimed your food donation.
                                   </span>
                                 </div>
-                                {/* Pointer arrow pointing directly down to Cancel button */}
                                 <div className="absolute -bottom-1.5 left-3/4 -translate-x-1/2 w-3 h-3 bg-card border-r border-b border-amber-500/50 rotate-45" />
                               </motion.div>
                             )}
                           </AnimatePresence>
 
                           <div className="flex items-center gap-2">
-                            {/* EDIT BUTTON */}
                             <Button
                               variant="outline"
                               size="sm"
@@ -665,7 +816,6 @@ export function DonorDashboardPage() {
                               <span>Edit</span>
                             </Button>
 
-                            {/* CANCEL BUTTON */}
                             <Button
                               variant="outline"
                               size="sm"
@@ -699,22 +849,29 @@ export function DonorDashboardPage() {
           </div>
         )
       ) : (
-        /* TAB 2: HISTORY */
+        /* TAB 2: HISTORY & EXPIRED LISTINGS */
         historyListings.length === 0 ? (
           <div className="text-center py-20 rounded-2xl border border-dashed border-border bg-card/40">
             <Archive className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
             <h3 className="text-lg font-bold">No past donation history</h3>
             <p className="text-muted-foreground text-sm max-w-sm mx-auto mt-1">
-              Completed and cancelled listings will appear here.
+              Completed, expired, and cancelled listings will appear here.
             </p>
           </div>
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {historyListings.map((d) => {
               const urls = parseMediaUrls(d.media_urls);
+              const uploadIso = d.created_at || d.createdAt || d.published_at || d.publishedAt;
+              const isExpired = d.status === "EXPIRED";
 
               return (
-                <Card key={d.id} className="border-border bg-card/60 overflow-hidden">
+                <Card
+                  key={d.id}
+                  className={`border-border bg-card/60 overflow-hidden ${
+                    isExpired ? "border-destructive/40" : ""
+                  }`}
+                >
                   <DonationCardMedia
                     urls={urls}
                     title={d.title}
@@ -728,21 +885,50 @@ export function DonorDashboardPage() {
                         variant={
                           d.status === "DELIVERED"
                             ? "success"
-                            : d.status === "CANCELLED"
+                            : isExpired || d.status === "CANCELLED"
                             ? "destructive"
                             : "outline"
                         }
-                        className="text-xs font-bold"
+                        className="text-xs font-bold uppercase tracking-wider"
                       >
                         {d.status}
                       </Badge>
                       <span className="text-xs text-muted-foreground">{d.food_type}</span>
                     </div>
                     <CardTitle className="text-lg">{d.title}</CardTitle>
+                    <CardDescription className="flex items-center gap-1.5 pt-1 text-xs">
+                      <MapPin className="h-3.5 w-3.5 text-primary shrink-0" />
+                      <span className="truncate">{d.pickup_address}</span>
+                    </CardDescription>
                   </CardHeader>
-                  <CardContent className="text-xs text-muted-foreground space-y-2">
+
+                  <CardContent className="text-xs text-muted-foreground space-y-3">
                     <div>{d.servings} Servings ({d.quantity_kg} kg)</div>
-                    <div>📍 {d.pickup_address}</div>
+
+                    {/* Exact Timestamps for Expired / Past Donations */}
+                    <div className="pt-2 border-t border-border/50 space-y-1.5">
+                      <div className="flex justify-between">
+                        <span className="font-medium text-foreground/80">Uploaded:</span>
+                        <span className="font-semibold text-foreground">
+                          {formatUploadedDateTime(uploadIso)}
+                        </span>
+                      </div>
+
+                      {isExpired ? (
+                        <div className="p-2.5 rounded-lg bg-destructive/10 border border-destructive/25 text-destructive font-semibold flex items-center justify-between">
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3.5 w-3.5" />
+                            <span>Expired on:</span>
+                          </span>
+                          <span>{formatUploadedDateTime(d.expires_at || d.expiresAt)}</span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-[11px]">
+                          <span>Expires:</span>
+                          <span>{formatUploadedDateTime(d.expires_at || d.expiresAt)}</span>
+                        </div>
+                      )}
+                    </div>
                   </CardContent>
                 </Card>
               );

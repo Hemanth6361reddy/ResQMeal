@@ -70,7 +70,7 @@ MIME_EXTENSIONS = {
 
 
 # --------------------------------------------------
-# Helper: serialize donation
+# Helper: serialize donation with all 4 timestamps
 # --------------------------------------------------
 
 def serialize_donation(donation: Donation) -> DonationResponse:
@@ -93,6 +93,12 @@ def serialize_donation(donation: Donation) -> DonationResponse:
     elif not isinstance(media, list):
         media = []
 
+    now = datetime.now(timezone.utc)
+    created_at = getattr(donation, "created_at", None) or now
+    updated_at = getattr(donation, "updated_at", None) or created_at
+    published_at = getattr(donation, "available_from", None) or created_at
+    expires_at = getattr(donation, "expires_at", None) or now
+
     return DonationResponse(
         id=donation.id,
         donor_id=donation.donor_id,
@@ -105,11 +111,17 @@ def serialize_donation(donation: Donation) -> DonationResponse:
         latitude=point.y,
         longitude=point.x,
         available_from=donation.available_from,
-        expires_at=donation.expires_at,
+        expires_at=expires_at,
         status=donation.status,
         image_url=donation.image_url,
         media_urls=media,
-        created_at=donation.created_at,
+        created_at=created_at,
+        updated_at=updated_at,
+        published_at=published_at,
+        createdAt=created_at,
+        updatedAt=updated_at,
+        publishedAt=published_at,
+        expiresAt=expires_at,
     )
 
 
@@ -174,6 +186,7 @@ async def create_donation(
         )
 
     media_urls = data.media_urls or []
+    server_now = datetime.now(timezone.utc)
 
     donation = Donation(
         donor_id=donor.id,
@@ -187,7 +200,7 @@ async def create_donation(
             f"POINT({data.longitude} {data.latitude})",
             srid=4326,
         ),
-        available_from=data.available_from,
+        available_from=server_now,  # Authoritative server-side publish timestamp
         expires_at=data.expires_at,
         status=DonationStatus.AVAILABLE,
         image_url=data.image_url,
@@ -372,7 +385,7 @@ async def update_donation(
     if data.media_urls is not None:
         donation.media_urls = json.dumps(data.media_urls) if data.media_urls else None
 
-    # Update updatedAt timestamp while preserving created_at
+    # Authoritative server-side update: update updatedAt timestamp while strictly preserving created_at and available_from
     donation.updated_at = datetime.now(timezone.utc)
 
     db.commit()
@@ -474,6 +487,7 @@ async def cancel_donation(
 
     try:
         donation.status = DonationStatus.CANCELLED
+        donation.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(donation)
     except Exception:

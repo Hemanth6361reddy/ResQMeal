@@ -88,7 +88,6 @@ function CreateDonationContent() {
   const queryClient = useQueryClient();
   const token = getAuthToken();
 
-  // Determine if in Edit Mode
   const editId = routeId || searchParams.get("edit");
   const isEditing = Boolean(editId);
 
@@ -111,13 +110,10 @@ function CreateDonationContent() {
     hours_until_expiry: 4,
   });
 
-  // Uploaded Media URLs array
   const [mediaItems, setMediaItems] = useState<UploadedMediaItem[]>([]);
 
-  // If passed through React Router state, use it for immediate pre-fill
   const stateDonation = (location.state as any)?.donation;
 
-  // Fallback query if user refreshed page directly on /donor/edit/:id
   const { data: fetchedDonation, isLoading: loadingExisting } = useQuery<any>({
     queryKey: ["donationDetail", editId],
     queryFn: () => apiFetch(`/donations/${editId}`),
@@ -126,16 +122,14 @@ function CreateDonationContent() {
 
   const donationData = stateDonation || fetchedDonation;
 
-  // Pre-fill form when editing
   useEffect(() => {
     if (!isEditing || !donationData) return;
 
-    // Estimate remaining hours
     let hours = 4;
     if (donationData.expires_at) {
       const diffMs = new Date(donationData.expires_at).getTime() - Date.now();
-      const diffHrs = Math.round(diffMs / (1000 * 60 * 60));
-      if (diffHrs > 0) hours = diffHrs;
+      const diffHrs = diffMs / (1000 * 60 * 60);
+      if (diffHrs > 0) hours = Number(diffHrs.toFixed(2));
     }
 
     setFormData({
@@ -150,7 +144,6 @@ function CreateDonationContent() {
       hours_until_expiry: hours,
     });
 
-    // Pre-fill existing media items
     const existingUrls = parseMediaUrls(donationData.media_urls);
     if (existingUrls.length > 0) {
       setMediaItems(
@@ -164,7 +157,6 @@ function CreateDonationContent() {
     }
   }, [isEditing, donationData]);
 
-  // Auth Guard
   if (!token) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
@@ -180,7 +172,6 @@ function CreateDonationContent() {
     );
   }
 
-  // Upload File Handler
   const handleUploadFiles = async (files: FileList | File[]) => {
     setMediaError(null);
 
@@ -248,11 +239,9 @@ function CreateDonationContent() {
     setMediaItems((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Submit Mutation (Create or Update)
   const mutation = useMutation({
     mutationFn: async () => {
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + Number(formData.hours_until_expiry));
+      const expiresAt = new Date(Date.now() + Number(formData.hours_until_expiry) * 3600 * 1000);
 
       const payload = {
         title: formData.title,
@@ -301,7 +290,6 @@ function CreateDonationContent() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-10">
-      {/* Toast Notification */}
       <AnimatePresence>
         {successToast && (
           <motion.div
@@ -349,7 +337,6 @@ function CreateDonationContent() {
             }}
             className="space-y-6"
           >
-            {/* Error Banner */}
             {mutation.isError && (
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
@@ -361,7 +348,6 @@ function CreateDonationContent() {
               </motion.div>
             )}
 
-            {/* Food Title */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Listing Title</label>
               <input
@@ -374,7 +360,6 @@ function CreateDonationContent() {
               />
             </div>
 
-            {/* Category & Portions */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Food Type</label>
@@ -433,7 +418,17 @@ function CreateDonationContent() {
                 </div>
               )}
 
-              {/* Drag-and-Drop Area */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) handleUploadFiles(e.target.files);
+                }}
+              />
+
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -446,73 +441,51 @@ function CreateDonationContent() {
                   if (e.dataTransfer.files) handleUploadFiles(e.dataTransfer.files);
                 }}
                 onClick={() => fileInputRef.current?.click()}
-                className={`relative p-6 rounded-2xl border-2 border-dashed transition-all cursor-pointer flex flex-col items-center justify-center text-center ${
+                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all ${
                   isDragging
-                    ? "border-primary bg-primary/10 scale-[1.01]"
-                    : "border-border hover:border-primary/60 bg-secondary/30 hover:bg-secondary/50"
+                    ? "border-primary bg-primary/10 scale-[0.99]"
+                    : "border-border/80 hover:border-primary/60 bg-secondary/30"
                 }`}
               >
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  multiple
-                  accept="image/jpeg,image/png,image/webp,video/mp4,video/webm"
-                  onChange={(e) => e.target.files && handleUploadFiles(e.target.files)}
-                  className="hidden"
-                />
-
-                <div className="flex items-center gap-2 text-primary mb-2">
-                  <div className="p-2.5 rounded-xl bg-primary/10 border border-primary/20">
-                    {uploading ? (
-                      <Loader2 className="h-6 w-6 animate-spin" />
-                    ) : (
-                      <UploadCloud className="h-6 w-6" />
-                    )}
+                {uploading ? (
+                  <div className="flex flex-col items-center justify-center py-4">
+                    <Loader2 className="h-8 w-8 animate-spin text-primary mb-2" />
+                    <p className="text-xs font-semibold text-foreground">Uploading files...</p>
                   </div>
-                </div>
-
-                <span className="text-sm font-bold text-foreground">
-                  {uploading ? "Uploading media securely..." : "Add Photos / Video"}
-                </span>
-                <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-                  Drag & drop food photos or a short video, or click to browse.
-                </p>
-                <span className="text-[10px] text-primary font-mono mt-2">
-                  JPG, PNG, WEBP (≤10MB) • MP4, WEBM (≤30MB)
-                </span>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-2 space-y-2">
+                    <div className="p-3 rounded-full bg-primary/15 text-primary mb-1">
+                      <UploadCloud className="h-6 w-6" />
+                    </div>
+                    <p className="text-sm font-semibold">
+                      Click to browse or drag & drop photos / short video
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      PNG, JPG, WEBP (max 10MB each) or MP4/WEBM video (max 30MB)
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {/* Preview Grid */}
               {mediaItems.length > 0 && (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 pt-2">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2">
                   <AnimatePresence>
                     {mediaItems.map((item, idx) => (
                       <motion.div
                         key={item.id}
-                        initial={{ opacity: 0, scale: 0.85 }}
+                        initial={{ opacity: 0, scale: 0.8 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 0.85 }}
-                        className="group relative rounded-xl overflow-hidden border border-border bg-card shadow-sm aspect-square flex items-center justify-center"
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        className="relative rounded-lg overflow-hidden border border-border group bg-black aspect-video"
                       >
-                        {item.media_type === "image" ? (
-                          <img
-                            src={resolveMediaUrl(item.url)}
-                            alt="Food preview"
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                          />
-                        ) : (
-                          <div className="relative w-full h-full bg-black flex items-center justify-center">
-                            <video src={resolveMediaUrl(item.url)} className="w-full h-full object-cover" muted />
-                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                              <Video className="h-6 w-6 text-white" />
-                            </div>
+                        {item.media_type === "video" ? (
+                          <div className="w-full h-full flex items-center justify-center bg-black relative">
+                            <video src={item.url} className="w-full h-full object-cover" muted />
+                            <Video className="h-5 w-5 text-white absolute" />
                           </div>
+                        ) : (
+                          <img src={item.url} alt={item.filename} className="w-full h-full object-cover" />
                         )}
-
-                        <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded bg-black/70 text-white uppercase tracking-wider backdrop-blur">
-                          {item.media_type}
-                        </span>
-
                         <button
                           type="button"
                           onClick={(e) => {
@@ -530,15 +503,20 @@ function CreateDonationContent() {
               )}
             </div>
 
-            {/* Expiry Hours */}
+            {/* Expiry Hours Selection */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Pickup Window Deadline (Hours from now)</label>
+              <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Pickup Window Deadline
+              </label>
               <select
                 value={formData.hours_until_expiry}
                 onChange={(e) => setFormData({ ...formData, hours_until_expiry: Number(e.target.value) })}
-                className="w-full h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+                className="w-full h-10 px-3 rounded-lg border border-border bg-card text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary font-medium"
               >
-                <option value={2}>2 Hours (Immediate rescue needed)</option>
+                <option value={0.033}>⚡ 2 Minutes (Quick Expiration Test)</option>
+                <option value={0.083}>⚡ 5 Minutes (Short Expiration Test)</option>
+                <option value={1}>1 Hour (Quick rescue needed)</option>
+                <option value={2}>2 Hours (Immediate rescue)</option>
                 <option value={4}>4 Hours (Standard cooked food window)</option>
                 <option value={8}>8 Hours (End of event / function)</option>
                 <option value={24}>24 Hours (Next morning pickup)</option>

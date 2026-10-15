@@ -1,53 +1,70 @@
-import React, { useState, useEffect, useRef, Component, ErrorInfo, ReactNode } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { 
-  MapPin, 
-  Navigation, 
-  Clock, 
-  Utensils, 
-  CheckCircle2, 
-  Loader2, 
-  Sparkles, 
-  Filter, 
-  AlertCircle, 
-  Map as MapIcon, 
+import {
+  MapPin,
+  Utensils,
+  Clock,
+  Calendar,
+  CheckCircle2,
+  AlertCircle,
+  Navigation,
+  Loader2,
+  Filter,
+  Sparkles,
+  Map as MapIcon,
   Video,
   X,
   Maximize2,
   ChevronLeft,
   ChevronRight,
-  RefreshCw
 } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { 
-  apiFetch, 
-  getAuthToken, 
-  removeAuthToken, 
+import {
+  apiFetch,
+  getAuthToken,
   getUserRole,
-  parseMediaUrls, 
-  isVideoMedia 
+  removeAuthToken,
+  parseMediaUrls,
+  isVideoMedia,
+  formatUploadedDateTime,
+  formatRelativeTime,
 } from "@/lib/api";
 
 interface NearbyDonation {
   id: string;
+  donor_id: string;
   title: string;
   food_type: string;
   description?: string;
-  servings: number;
   quantity_kg: number;
+  servings: number;
   pickup_address: string;
   latitude: number;
   longitude: number;
   distance_km: number;
-  expires_at: string;
   status: string;
-  media_urls?: string[] | string;
+  expires_at: string;
+  created_at: string;
+  updated_at?: string;
+  published_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  publishedAt?: string;
+  expiresAt?: string;
+  media_urls?: string[];
 }
 
 interface MyClaim {
@@ -56,62 +73,25 @@ interface MyClaim {
   delivery_id?: string;
   title: string;
   food_type: string;
+  servings: number;
   servings_requested: number;
   pickup_address: string;
   claim_status: string;
   donation_status: string;
   expires_at: string;
+  created_at: string;
+  updated_at?: string;
+  published_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  publishedAt?: string;
+  expiresAt?: string;
 }
 
 interface LightboxState {
   urls: string[];
   index: number;
   title: string;
-}
-
-// Error Boundary to prevent any blank screen
-interface ErrorBoundaryProps {
-  children: ReactNode;
-}
-interface ErrorBoundaryState {
-  hasError: boolean;
-  error: Error | null;
-}
-
-class DashboardErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  constructor(props: ErrorBoundaryProps) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-
-  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error("NGO Dashboard render error caught:", error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
-          <div className="p-4 rounded-2xl bg-destructive/15 border border-destructive/30 text-destructive mb-4">
-            <AlertCircle className="h-10 w-10 mx-auto" />
-          </div>
-          <h2 className="text-2xl font-bold">Failed to load NGO Console</h2>
-          <p className="text-muted-foreground mt-2 mb-6 max-w-md text-sm">
-            {this.state.error?.message || "An unexpected error occurred. Please try reloading the page."}
-          </p>
-          <Button onClick={() => window.location.reload()} className="gap-2">
-            <RefreshCw className="h-4 w-4" />
-            <span>Reload Console</span>
-          </Button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
 }
 
 // Interactive Multi-Media Card Carousel
@@ -169,7 +149,7 @@ function DonationCardMedia({
         />
       )}
 
-      {/* Hover Overlay */}
+      {/* Hover Zoom Prompt */}
       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-semibold backdrop-blur-[2px] pointer-events-none">
         <Maximize2 className="h-4 w-4" />
         <span>Click to view gallery ({urls.length} media)</span>
@@ -269,17 +249,6 @@ function NGODashboardContent() {
   const [mapError, setMapError] = useState<string | null>(null);
 
   const [coords] = useState({ lat: 12.9716, lng: 77.5946 });
-
-  const formatTime = (isoString?: string) => {
-    if (!isoString) return "N/A";
-    try {
-      const dt = new Date(isoString);
-      if (isNaN(dt.getTime())) return "N/A";
-      return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    } catch {
-      return "N/A";
-    }
-  };
 
   // 1. Query Nearby Donations
   const { data: nearbyDonations, isLoading: loadingNearby, error: errorNearby } = useQuery<NearbyDonation[]>({
@@ -448,26 +417,20 @@ function NGODashboardContent() {
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-400 mb-4">
           <AlertCircle className="h-10 w-10 mx-auto" />
         </div>
-        <h2 className="text-2xl font-bold">NGO Account Required</h2>
-        <p className="text-muted-foreground mt-2 mb-6 max-w-md text-sm">
-          You are currently signed in with a <span className="font-semibold text-foreground">{userRole}</span> account. Please switch to your registered NGO account.
+        <h2 className="text-2xl font-bold">Access Restricted</h2>
+        <p className="text-muted-foreground mt-2 mb-6 max-w-sm">
+          This portal is reserved for registered NGOs and shelters. Your account role is {userRole}.
         </p>
-        <div className="flex gap-3">
-          <Button variant="outline" onClick={handleLogout}>
-            Switch Account
-          </Button>
-          <Link to="/donor/dashboard">
-            <Button>Go to Donor Console</Button>
-          </Link>
-        </div>
+        <Button onClick={handleLogout} variant="outline">
+          Sign in with different account
+        </Button>
       </div>
     );
   }
 
-  // Active modal media URLs
   const modalUrls = selectedDonation ? parseMediaUrls(selectedDonation.media_urls) : [];
-  const modalMedia = modalUrls[0] || null;
-  const isModalVideo = modalMedia ? isVideoMedia(modalMedia) : false;
+  const modalMedia = modalUrls[0];
+  const isModalVideo = isVideoMedia(modalMedia);
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -723,6 +686,7 @@ function NGODashboardContent() {
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {donationsList.map((d) => {
                   const urls = parseMediaUrls(d.media_urls);
+                  const uploadIso = d.created_at || d.createdAt || d.published_at || d.publishedAt;
 
                   return (
                     <Card key={d.id} className="flex flex-col justify-between hover:border-primary/50 transition-all overflow-hidden shadow-md">
@@ -762,11 +726,36 @@ function NGODashboardContent() {
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Clock className="h-3.5 w-3.5" />
-                            <span>Expires: {formatTime(d.expires_at)}</span>
-                          </span>
+                        {/* Timestamps Section: Exact Creation & Expiration */}
+                        <div className="space-y-1.5 pt-1 border-t border-border/50 text-xs">
+                          {/* Uploaded Timestamp */}
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span className="flex items-center gap-1 font-medium text-foreground/80">
+                              <Calendar className="h-3.5 w-3.5 text-primary shrink-0" />
+                              <span>Uploaded:</span>
+                            </span>
+                            <div className="text-right">
+                              <span className="font-semibold text-foreground">
+                                {formatUploadedDateTime(uploadIso)}
+                              </span>
+                              {uploadIso && formatRelativeTime(uploadIso) && (
+                                <span className="text-[10px] text-muted-foreground ml-1.5 font-normal">
+                                  ({formatRelativeTime(uploadIso)})
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Expiry Timestamp */}
+                          <div className="flex items-center justify-between text-muted-foreground">
+                            <span className="flex items-center gap-1">
+                              <Clock className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                              <span>Expires:</span>
+                            </span>
+                            <span className="font-medium text-foreground/90">
+                              {formatUploadedDateTime(d.expires_at || d.expiresAt)}
+                            </span>
+                          </div>
                         </div>
 
                         <Button
@@ -806,38 +795,64 @@ function NGODashboardContent() {
             </div>
           ) : (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {claimsList.map((claim) => (
-                <Card key={claim.claim_id} className="border-border">
-                  <CardHeader>
-                    <div className="flex justify-between items-start mb-2">
-                      <Badge variant={claim.donation_status === "DELIVERED" ? "success" : "default"}>
-                        {claim.donation_status}
-                      </Badge>
-                      <span className="text-xs text-primary font-semibold">{claim.food_type}</span>
-                    </div>
-                    <CardTitle className="text-lg">{claim.title}</CardTitle>
-                    <CardDescription className="flex items-center gap-1.5 pt-1 text-xs">
-                      <MapPin className="h-3.5 w-3.5 text-primary shrink-0" />
-                      <span className="truncate">{claim.pickup_address}</span>
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-sm">
-                    <div className="p-3 rounded-lg bg-secondary/50 flex justify-between">
-                      <span className="text-muted-foreground">Requested Portions:</span>
-                      <span className="font-bold text-foreground">{claim.servings_requested} Meals</span>
-                    </div>
+              {claimsList.map((claim) => {
+                const claimUploadIso = claim.created_at || claim.createdAt;
 
-                    {claim.delivery_id && (
-                      <Link to={`/track/${claim.delivery_id}`}>
-                        <Button size="sm" className="w-full gap-1.5 text-xs">
-                          <Navigation className="h-3.5 w-3.5" />
-                          <span>Track Delivery Live 📡</span>
-                        </Button>
-                      </Link>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
+                return (
+                  <Card key={claim.claim_id} className="border-border">
+                    <CardHeader>
+                      <div className="flex justify-between items-start mb-2">
+                        <Badge variant={claim.donation_status === "DELIVERED" ? "success" : "default"}>
+                          {claim.donation_status}
+                        </Badge>
+                        <span className="text-xs text-primary font-semibold">{claim.food_type}</span>
+                      </div>
+                      <CardTitle className="text-lg">{claim.title}</CardTitle>
+                      <CardDescription className="flex items-center gap-1.5 pt-1 text-xs">
+                        <MapPin className="h-3.5 w-3.5 text-primary shrink-0" />
+                        <span className="truncate">{claim.pickup_address}</span>
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                      <div className="p-3 rounded-lg bg-secondary/50 flex justify-between">
+                        <span className="text-muted-foreground">Requested Portions:</span>
+                        <span className="font-bold text-foreground">{claim.servings_requested} Meals</span>
+                      </div>
+
+                      {/* Upload and Expiry Timestamps */}
+                      <div className="space-y-1 pt-1 border-t border-border/50 text-xs">
+                        <div className="flex items-center justify-between text-muted-foreground">
+                          <span className="flex items-center gap-1 font-medium text-foreground/80">
+                            <Calendar className="h-3 w-3 text-primary" />
+                            <span>Uploaded:</span>
+                          </span>
+                          <span className="font-semibold text-foreground">
+                            {formatUploadedDateTime(claimUploadIso)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between text-muted-foreground text-[11px]">
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3 text-amber-400" />
+                            <span>Expires:</span>
+                          </span>
+                          <span>
+                            {formatUploadedDateTime(claim.expires_at || claim.expiresAt)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {claim.delivery_id && (
+                        <Link to={`/track/${claim.delivery_id}`}>
+                          <Button size="sm" className="w-full gap-1.5 text-xs">
+                            <Navigation className="h-3.5 w-3.5" />
+                            <span>Track Delivery Live 📡</span>
+                          </Button>
+                        </Link>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </div>
@@ -871,6 +886,22 @@ function NGODashboardContent() {
               <CardDescription>
                 {selectedDonation.distance_km ?? 0} km away • {selectedDonation.pickup_address}
               </CardDescription>
+
+              {/* Uploaded date badge inside claim modal */}
+              <div className="mt-2.5 p-2.5 rounded-xl bg-secondary/60 border border-border/60 flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 font-medium text-muted-foreground">
+                  <Calendar className="h-3.5 w-3.5 text-primary" />
+                  <span>Uploaded:</span>
+                </span>
+                <span className="font-bold text-foreground">
+                  {formatUploadedDateTime(selectedDonation.created_at || selectedDonation.createdAt || selectedDonation.published_at)}
+                  {(selectedDonation.created_at || selectedDonation.createdAt) && formatRelativeTime(selectedDonation.created_at || selectedDonation.createdAt) && (
+                    <span className="text-[10px] font-normal text-muted-foreground ml-1.5">
+                      ({formatRelativeTime(selectedDonation.created_at || selectedDonation.createdAt)})
+                    </span>
+                  )}
+                </span>
+              </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-1.5">
@@ -918,9 +949,5 @@ function NGODashboardContent() {
 }
 
 export function NGODashboardPage() {
-  return (
-    <DashboardErrorBoundary>
-      <NGODashboardContent />
-    </DashboardErrorBoundary>
-  );
+  return <NGODashboardContent />;
 }

@@ -82,6 +82,14 @@ class DonationResponse(BaseModel):
     image_url: Optional[str] = None
     media_urls: List[str] = Field(default_factory=list)
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+
+    # CamelCase aliases for frontend compatibility
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    publishedAt: Optional[datetime] = None
+    expiresAt: Optional[datetime] = None
 
     class Config:
         from_attributes = True

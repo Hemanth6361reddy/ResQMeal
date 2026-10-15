@@ -115,6 +115,66 @@ export function isVideoMedia(url?: string | null): boolean {
 }
 
 /**
+ * Formats a date/timestamp to exact human-readable format:
+ * e.g. "07 Oct 2026, 12:42 AM"
+ */
+export function formatUploadedDateTime(dateInput: string | Date | undefined | null): string {
+  if (!dateInput) return "N/A";
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return "N/A";
+
+  const day = String(d.getDate()).padStart(2, "0");
+  const months = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec",
+  ];
+  const month = months[d.getMonth()];
+  const year = d.getFullYear();
+
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, "0");
+  const ampm = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  const hourStr = hours === 0 ? "12" : String(hours).padStart(2, "0");
+
+  return `${day} ${month} ${year}, ${hourStr}:${minutes} ${ampm}`;
+}
+
+/**
+ * Calculates a friendly relative time string (e.g. "18 minutes ago", "just now", "2 hours ago").
+ */
+export function formatRelativeTime(dateInput: string | Date | undefined | null): string {
+  if (!dateInput) return "";
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return "";
+
+  const now = Date.now();
+  const diffMs = now - d.getTime();
+
+  if (diffMs < 0) return "just now";
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return "just now";
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin} ${diffMin === 1 ? "minute" : "minutes"} ago`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours} ${diffHours === 1 ? "hour" : "hours"} ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays} ${diffDays === 1 ? "day" : "days"} ago`;
+  const diffWeeks = Math.floor(diffDays / 7);
+  return `${diffWeeks} ${diffWeeks === 1 ? "week" : "weeks"} ago`;
+}
+
+/**
  * Standardized Fetch Wrapper that automatically includes
  * Authorization: Bearer <token> for protected requests.
  */

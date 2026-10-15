@@ -21,6 +21,15 @@ class NearbyDonationResponse(BaseModel):
     expires_at: datetime
     status: DonationStatus
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+
+    # CamelCase aliases
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    publishedAt: Optional[datetime] = None
+    expiresAt: Optional[datetime] = None
+
     media_urls: List[str] = Field(default_factory=list)
 
     class Config:
@@ -61,3 +70,11 @@ class MyClaimWithDonationResponse(BaseModel):
     donation_status: DonationStatus
     expires_at: datetime
     created_at: datetime
+    updated_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+
+    # CamelCase aliases
+    createdAt: Optional[datetime] = None
+    updatedAt: Optional[datetime] = None
+    publishedAt: Optional[datetime] = None
+    expiresAt: Optional[datetime] = None

@@ -131,7 +131,7 @@ async def get_nearby_donations(
 
     results = query.order_by("distance_km").all()
 
-    # 4. Build response output, including media URLs
+    # 4. Build response output with full authoritative timestamp metadata
     output = []
 
     for donation, dist_km in results:
@@ -156,6 +156,11 @@ async def get_nearby_donations(
                     # Support a single URL stored as plain text.
                     media = [stored_media]
 
+        now_utc = datetime.now(timezone.utc)
+        created_at_dt = getattr(donation, "created_at", None) or now_utc
+        updated_at_dt = getattr(donation, "updated_at", None) or created_at_dt
+        published_at_dt = getattr(donation, "available_from", None) or created_at_dt
+
         output.append(
             {
                 "id": str(donation.id),
@@ -171,7 +176,13 @@ async def get_nearby_donations(
                 "distance_km": round(float(dist_km), 2),
                 "status": donation.status.value,
                 "expires_at": donation.expires_at.isoformat(),
-                "created_at": donation.created_at.isoformat(),
+                "created_at": created_at_dt.isoformat(),
+                "updated_at": updated_at_dt.isoformat(),
+                "published_at": published_at_dt.isoformat(),
+                "expiresAt": donation.expires_at.isoformat(),
+                "createdAt": created_at_dt.isoformat(),
+                "updatedAt": updated_at_dt.isoformat(),
+                "publishedAt": published_at_dt.isoformat(),
                 "media_urls": media,
             }
         )
@@ -198,7 +209,7 @@ async def get_nearby_donations(
     "/donations/{id}/request",
     response_model=DonationClaimResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Claim/Request Food Donation",
+    summary="Claim Food Donation (Transactional)",
 )
 async def request_donation(
     id: uuid.UUID,
@@ -208,72 +219,77 @@ async def request_donation(
     current_user: User = Depends(RoleChecker([UserRole.NGO])),
 ):
     """
-    Allows a verified NGO to place a request for an available
-    food donation.
-
     Transitions donation status to ACCEPTED and automatically
-    dispatches a delivery task to the driver queue.
-
-    Also invalidates nearby Redis caches so NGOs don't receive
-    stale information about already-claimed food.
+    provisions a delivery assignment pending driver claim.
     """
 
-    # 1. Get NGO profile
     ngo_profile = current_user.ngo_profile
 
     if not ngo_profile:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="NGO profile not found",
+            detail="NGO profile not found for this account.",
         )
 
-    # 2. Find donation
+    # 1. Fetch donation with pessimistic lock
     donation = (
         db.query(Donation)
         .filter(Donation.id == id)
+        .with_for_update()
         .first()
     )
 
     if not donation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation not found",
+            detail="Donation not found.",
         )
 
-    # 3. Check donation availability
+    # 2. Check if donation is currently available
     if donation.status != DonationStatus.AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"This food is no longer available. "
+                f"Donation is no longer available to claim. "
                 f"Current status: {donation.status.value}"
             ),
         )
 
-    # 4. Check expiration
-    if donation.expires_at < datetime.now(timezone.utc):
+    # 3. Check expiration timestamp
+    if donation.expires_at <= datetime.now(timezone.utc):
         donation.status = DonationStatus.EXPIRED
+        donation.updated_at = datetime.now(timezone.utc)
         db.commit()
 
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This donation has expired",
+            detail="Donation listing has expired and cannot be requested.",
         )
 
-    # 5. Create the request claim
+    # 4. Check requested servings
+    if data.servings_requested > donation.servings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Cannot request {data.servings_requested} servings. "
+                f"Only {donation.servings} are available."
+            ),
+        )
+
+    # 5. Create donation request claim
     claim = DonationRequest(
         donation_id=donation.id,
         ngo_id=ngo_profile.id,
-        servings_requested=min(
-            data.servings_requested,
-            donation.servings,
-        ),
+        servings_requested=data.servings_requested,
+        pickup_window_start=donation.available_from,
+        pickup_window_end=donation.expires_at,
         status=RequestStatus.APPROVED,
         notes=data.notes,
     )
 
-    # 6. Mark donation as accepted
+    # 6. Mark donation as accepted and stamp updated_at
     donation.status = DonationStatus.ACCEPTED
+    donation.updated_at = datetime.now(timezone.utc)
     db.add(claim)
 
     # 7. Generate claim ID
@@ -319,7 +335,7 @@ def list_my_claims(
 ):
     """
     Returns all food donation claims placed by this NGO,
-    along with their active delivery ID.
+    along with their active delivery ID and timestamp metadata.
     """
 
     ngo_profile = current_user.ngo_profile
@@ -344,6 +360,10 @@ def list_my_claims(
             .first()
         )
 
+        d_created = getattr(claim.donation, "created_at", claim.created_at)
+        d_updated = getattr(claim.donation, "updated_at", d_created)
+        d_published = getattr(claim.donation, "available_from", d_created)
+
         output.append(
             MyClaimWithDonationResponse(
                 claim_id=claim.id,
@@ -357,7 +377,13 @@ def list_my_claims(
                 claim_status=claim.status,
                 donation_status=claim.donation.status,
                 expires_at=claim.donation.expires_at,
-                created_at=claim.created_at,
+                created_at=d_created,
+                updated_at=d_updated,
+                published_at=d_published,
+                createdAt=d_created,
+                updatedAt=d_updated,
+                publishedAt=d_published,
+                expiresAt=claim.donation.expires_at,
             )
         )
 
